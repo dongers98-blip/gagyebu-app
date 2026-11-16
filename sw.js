@@ -1,5 +1,5 @@
 // 오프라인에서도 열리도록 앱 파일을 캐시한다. 파일을 고치면 VERSION을 올린다.
-const VERSION = 'gagyebu-v9';
+const VERSION = 'gagyebu-v10';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg'];
 // 브라우저에 남아 있는 옛 파일을 쓰지 않고, 서버에 최신인지 확인한 뒤 받는다.
 const NO_CACHE = { cache: 'no-cache' };
