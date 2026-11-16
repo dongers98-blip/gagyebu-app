@@ -268,7 +268,15 @@ function eff() {
 }
 // 현재 잔액 = 직접 입력한 기준 금액 + 연결된 내역. 부채는 돈이 나갈수록 늘어난다.
 const bal = a => a.amount + sgn(a) * (eff()[a.id] || [0])[0];
-const lastAcc = type => { const id = (S.last || {})[type]; return accOf(id) ? id : ''; };
+// 새 내역의 기본 통장·카드: 지난번에 고른 것, 없으면 처음 등록한 자산. 그래서 따로 고르지 않아도 바로 반영된다.
+// 'none'은 일부러 '연결 안 함'을 고른 경우다.
+const lastAcc = type => {
+  const id = (S.last || {})[type];
+  if (id === 'none') return '';
+  if (accOf(id)) return id;
+  const a = S.accounts.find(x => x.side === 'asset') || (type === 'expense' ? S.accounts[0] : null);
+  return a ? a.id : '';
+};
 
 /* ---------- 유틸 ---------- */
 const pad = n => String(n).padStart(2, '0');
@@ -745,7 +753,7 @@ function viewBs() {
     <button class="setrow" data-act="tab" data-v="year"><span>올해 손익<small>눌러서 연간 결산 보기 ›</small></span>${signed(ypl)}</button>
     <div class="total"><span>부채·자본 총계</span><span class="num">${won(tl + eq)}</span></div>
   </section>
-  <p class="note" style="text-align:center;padding:0 12px">가계부에서 통장·카드를 고른 내역은 오늘 날짜까지 잔액에 자동으로 반영돼요. 실제 잔액과 다르면 항목을 눌러 고쳐 주세요. 통장에서 카드값을 낸 날은 ‘이체’로 기록하면 양쪽이 함께 줄어요.</p>`;
+  <p class="note" style="text-align:center;padding:0 12px">가계부에 내역을 저장하면 선택된 통장·카드 잔액에 바로 반영돼요 (오늘 날짜까지의 내역). 실제 잔액과 다르면 항목을 눌러 고쳐 주세요. 통장에서 카드값을 낸 날은 ‘이체’로 기록하면 양쪽이 함께 줄어요.</p>`;
 }
 
 /* ---------- 설정 ---------- */
@@ -913,6 +921,7 @@ const ACT = {
   save() {
     syncDraft();
     const d = draft;
+    let applied = ''; // 이번 저장이 잔액에 반영된 통장·카드 (저장 후 안내용)
     if (d.kind === 'tx') {
       if (!d.amount) return toast('금액을 입력해 주세요');
       if (!d.date) return toast('날짜를 선택해 주세요');
@@ -922,7 +931,8 @@ const ACT = {
       const rec = { id: d.id || uid(), type: d.type, amount: d.amount, category: tr ? '이체' : d.category, date: d.date, memo: (d.memo || '').trim() };
       if (a) rec.acc = a;
       if (b) rec.to = b;
-      if (!d.id && !tr) (S.last || (S.last = {}))[d.type] = a; // 다음 입력 때 기본값으로 쓴다
+      if (!d.id && !tr && (a || d.accTouched)) (S.last || (S.last = {}))[d.type] = a || 'none'; // 다음 입력 때 기본값으로 쓴다
+      if (d.date <= today()) applied = tr ? 'transfer' : a;
       if (d.subId) rec.subId = d.subId;
       const i = S.tx.findIndex(x => x.id === rec.id);
       if (i >= 0) S.tx[i] = rec; else S.tx.push(rec);
@@ -945,6 +955,9 @@ const ACT = {
       if (i >= 0) S.accounts[i] = rec; else S.accounts.push(rec);
     }
     closeSheet(); processSubs(); render();
+    const la = accOf(applied);
+    if (applied === 'transfer') toast('이체를 잔액에 반영했어요');
+    else if (la) toast(`${la.name} ${la.side === 'asset' ? '잔액' : '갚을 금액'} ${won(bal(la))}`);
   },
   del(v, btn) {
     if (!armed(btn, '한 번 더 누르면 삭제')) return;
