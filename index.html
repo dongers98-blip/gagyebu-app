@@ -826,7 +826,7 @@ function viewSet() {
   <section class="card">
     <h2>데이터</h2>
     <button class="setrow" data-act="exportJson"><span>백업 파일 내보내기<small>내역·구독·자산을 파일로 저장</small></span><span class="go">›</span></button>
-    <button class="setrow" data-act="importJson"><span>백업 파일 불러오기<small>현재 데이터를 백업 내용으로 교체</small></span><span class="go">›</span></button>
+    <button class="setrow" data-act="importJson"><span>백업 파일 불러오기<small>${NATIVE ? '이 앱의 .json 백업(교체) 또는 편한가계부 .mmbak(추가)' : '현재 데이터를 백업 내용으로 교체'}</small></span><span class="go">›</span></button>
     <button class="setrow" data-act="exportCsv"><span>엑셀용 CSV 내보내기<small>수입·지출 내역만</small></span><span class="go">›</span></button>
     <button class="setrow" data-act="wipe" id="wipe"><span class="exp">모든 데이터 삭제</span><span class="go">›</span></button>
   </section>
@@ -1140,6 +1140,7 @@ document.addEventListener('input', e => {
 document.getElementById('file').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f) return;
+  if (/\.mmbak$/i.test(f.name)) return importMmbak(f);
   try {
     const d = JSON.parse(await f.text());
     if (!d || !Array.isArray(d.tx) || !Array.isArray(d.subs)) throw 0;
@@ -1148,6 +1149,31 @@ document.getElementById('file').addEventListener('change', async e => {
     processSubs(); render(); toast('백업을 불러왔어요');
   } catch (err) { toast('가계부 백업 파일이 아니에요'); }
 });
+// 편한가계부(.mmbak) 백업에서 수입·지출 내역을 가져와 지금 데이터에 더한다. 파일 해석은 안드로이드 앱이 한다.
+async function importMmbak(f) {
+  if (!NATIVE || !Native.mmbakToJson) return toast('.mmbak 파일은 안드로이드 앱(APK)에서만 불러올 수 있어요');
+  const buf = new Uint8Array(await f.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+  let rows = null;
+  try { rows = JSON.parse(Native.mmbakToJson(btoa(bin))); } catch (e) {}
+  if (!Array.isArray(rows)) return toast('편한가계부 백업 파일을 읽지 못했어요');
+  const seen = new Set(S.tx.map(t => t.mmId).filter(Boolean));
+  const fresh = rows.filter(r => r.amount > 0 && !seen.has(r.id));
+  if (!fresh.length) return toast('새로 가져올 내역이 없어요');
+  if (!confirm(`편한가계부 내역 ${fresh.length}건을 지금 가계부에 추가할까요? (기존 내역은 그대로 둡니다)`)) return;
+  const cats = { expense: CATS.expense.map(c => [...c]), income: CATS.income.map(c => [...c]) };
+  for (const r of fresh) {
+    // 편한가계부 카테고리는 "🍜 식비"처럼 아이콘이 이름 앞에 붙어 있다
+    const raw = String(r.category || '').trim() || '기타', m = raw.match(/^([^\p{L}\p{N}]+)\s+(.+)$/u);
+    const name = (m ? m[2] : raw).slice(0, 12), emoji = m ? m[1] : '📌';
+    if (!cats[r.type].some(c => c[0] === name)) cats[r.type].push([name, emoji]);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? r.date : ymd(new Date(r.time));
+    S.tx.push({ id: uid(), type: r.type, amount: Math.round(r.amount), category: name, date, memo: String(r.memo || '').slice(0, 40), mmId: r.id });
+  }
+  S.cats = cats;
+  processSubs(); render(); toast(`편한가계부 내역 ${fresh.length}건을 가져왔어요`);
+}
 let lastDay = today();
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || draft) return;
