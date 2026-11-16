@@ -130,6 +130,21 @@ button{cursor:pointer;border:0;background:none;padding:0}
 .eq em{align-self:center;font-style:normal;color:var(--sub);font-weight:700}
 .total{display:flex;justify-content:space-between;padding-top:12px;margin-top:4px;border-top:2px solid var(--line);font-weight:700}
 
+.sav{color:var(--accent)}
+.row2.r3{gap:6px}
+.row2.r3 .mini{padding:9px 8px}
+.row2.r3 .mini b{font-size:12.5px;letter-spacing:-.03em;white-space:nowrap}
+/* 입력 창: 뒤 화면 고정, 글자가 칸을 넘지 않게 */
+html.lock,html.lock body{overflow:hidden}
+.sheet{overscroll-behavior:contain}
+.scrim{overscroll-behavior:contain}
+.seg button{min-width:0;padding-left:4px;padding-right:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet h3{gap:10px}
+.sheet h3 button{flex:none;white-space:nowrap}
+.sheet .in{min-width:0;max-width:100%}
+.sheet input[type=date].in{display:block;-webkit-appearance:none;appearance:none;min-height:50px;text-align:left}
+.sheet .chip{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.sheet label.f{line-height:1.3}
 .kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .kpis .mini b{font-size:14px;white-space:nowrap}
 /* 결산 */
@@ -216,11 +231,13 @@ const KEY = 'gagyebu.v1';
 const NATIVE = !!window.Native; // 안드로이드 앱(APK) 안에서 실행 중인지. 웹에서는 false
 const DEF_CATS = {
   expense: [['식비','🍚'],['카페·간식','☕'],['교통','🚌'],['쇼핑','🛍️'],['생활','🧺'],['주거·통신','🏠'],
-            ['의료·건강','💊'],['문화·여가','🎬'],['교육','📚'],['구독','🔁'],['경조사','🎁'],['투자','📈'],['기타','📌']],
+            ['의료·건강','💊'],['문화·여가','🎬'],['교육','📚'],['구독','🔁'],['경조사','🎁'],['기타','📌']],
+  saving:  [['적금','🏦'],['예금','💰'],['주식','📈'],['펀드·ETF','📊'],['연금','🧓'],['기타','📌']],
   income:  [['급여','💼'],['용돈','💝'],['부수입','🪙'],['금융수입','🏦'],['투자수익','📈'],['기타','📌']]
 };
 // 카테고리는 설정에서 고칠 수 있다(S.cats). 고친 적이 없으면 기본 목록을 쓴다.
-const CATS = { get expense() { return (S.cats || DEF_CATS).expense; }, get income() { return (S.cats || DEF_CATS).income; } };
+const catsOf = k => (S.cats && S.cats[k]) || DEF_CATS[k];
+const CATS = { get expense() { return catsOf('expense'); }, get income() { return catsOf('income'); }, get saving() { return catsOf('saving'); } };
 const ACC_KINDS = {
   asset: [['현금','💵'],['예금·적금','🏦'],['투자','📈'],['부동산·보증금','🏠'],['받을 돈','🤝'],['기타','📦']],
   liab:  [['카드값','💳'],['대출','🏛️'],['빌린 돈','🤝'],['기타','📦']]
@@ -249,7 +266,8 @@ async function refreshFx(force) {
     return true;
   } catch (e) { return false; }
 }
-const TYPE_NAME = { expense: '지출', income: '수입', transfer: '이체' };
+// saving(저축·투자)은 쓴 돈도 번 돈도 아니라서 지출·수입 합계에 넣지 않고 따로 센다
+const TYPE_NAME = { expense: '지출', income: '수입', saving: '저축·투자', transfer: '이체' };
 const emojiOf = (type, cat) => ((CATS[type] || []).find(c => c[0] === cat) || [0, '📌'])[1];
 const accEmoji = (side, kind) => (ACC_KINDS[side].find(c => c[0] === kind) || [0, '📦'])[1];
 
@@ -503,7 +521,7 @@ function txItem(t, withDate) {
   return `<li><button class="item" data-act="editTx" data-v="${t.id}">
     <span class="em">${tr ? '🔄' : emojiOf(t.type, t.category)}</span>
     <span class="mid"><b>${esc(t.memo || t.category)}</b><span>${withDate ? fmtDay(t.date) + ' · ' : ''}${sub}</span></span>
-    <span class="amt num ${tr ? 'muted' : t.type === 'income' ? 'inc' : 'exp'}">${tr ? '' : t.type === 'income' ? '+' : '-'}${won(t.amount)}</span>
+    <span class="amt num ${tr ? 'muted' : t.type === 'income' ? 'inc' : t.type === 'saving' ? 'sav' : 'exp'}">${t.type === 'income' ? '+' : t.type === 'expense' ? '-' : ''}${won(t.amount)}</span>
   </button></li>`;
 }
 
@@ -539,7 +557,7 @@ function viewHome() {
     for (let d = 1; d <= daysIn(y, m - 1); d++) cells += cell(`${ym}-${pad(d)}`);
     body = `<section class="card" style="padding:14px 10px"><div class="cal">${dowHead()}${cells}</div></section>`;
   }
-  const tx = rangeTx(from, to), exp = sum(tx, 'expense'), inc = sum(tx, 'income');
+  const tx = rangeTx(from, to), exp = sum(tx, 'expense'), inc = sum(tx, 'income'), sav = sum(tx, 'saving');
   let budget = '';
   if (ui.mode === 'month' && S.budget > 0) {
     const p = Math.min(100, exp / S.budget * 100), left = S.budget - exp;
@@ -552,9 +570,10 @@ function viewHome() {
   <section class="card">
     <h2>${capt} 지출</h2>
     <div class="big num">${won(exp)}</div>
-    <div class="row2">
+    <div class="row2 r3">
       <div class="mini"><span>수입</span><b class="num inc">${won(inc)}</b></div>
-      <div class="mini"><span>남은 돈</span><b class="num ${inc - exp < 0 ? 'exp' : ''}">${won(inc - exp)}</b></div>
+      <div class="mini"><span>저축·투자</span><b class="num sav">${won(sav)}</b></div>
+      <div class="mini"><span>남은 돈</span><b class="num ${inc - exp - sav < 0 ? 'exp' : ''}">${won(inc - exp - sav)}</b></div>
     </div>${budget}
   </section>
   ${body}${dayDetail(ui.date)}`;
@@ -676,13 +695,13 @@ function viewStatMonth() {
     acc += len; return seg;
   }).join('');
   const donut = total ? `<div class="donut">
-      <svg viewBox="0 0 120 120" role="img" aria-label="카테고리별 ${type === 'expense' ? '지출' : '수입'} 비율">${arcs}
-        <text x="60" y="58" text-anchor="middle" class="cap">${type === 'expense' ? '지출' : '수입'} 합계</text>
+      <svg viewBox="0 0 120 120" role="img" aria-label="카테고리별 ${TYPE_NAME[type]} 비율">${arcs}
+        <text x="60" y="58" text-anchor="middle" class="cap">${TYPE_NAME[type]} 합계</text>
         <text x="60" y="72" text-anchor="middle">${short(total)}</text></svg>
       <div class="legend">${rows.slice(0, 7).map(([c, a], i) => `<div><s style="background:${PALETTE[i % PALETTE.length]}"></s><span>${esc(c)}</span><b class="num">${Math.round(a / total * 100)}%</b></div>`).join('')}${rows.length > 7 ? `<div class="muted">외 ${rows.length - 7}개</div>` : ''}</div>
     </div>
     ${rows.map(([c, a], i) => `<div class="catrow"><span>${emojiOf(type, c)} ${esc(c)}</span><span class="am num">${won(a)}</span><div class="bar"><i style="width:${a / rows[0][1] * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></div>${budLine(type, c, a)}</div>`).join('')}`
-    : `<div class="empty">이 달 ${type === 'expense' ? '지출' : '수입'} 내역이 없어요</div>`;
+    : `<div class="empty">이 달 ${TYPE_NAME[type]} 내역이 없어요</div>`;
 
   const months = [];
   for (let i = 5; i >= 0; i--) { const k = shiftMonth(ym, -i), it = statItems(k); months.push([k, sum(it, 'income'), sum(it, 'expense')]); }
@@ -693,7 +712,7 @@ function viewStatMonth() {
   const amort = S.subs.some(s => s.cycle === 'yearly' && s.active);
 
   return `${navHtml('sprev', 'snext', `${y}년 ${m}월`)}
-  ${segHtml('statType', type, [['expense', '지출'], ['income', '수입']])}
+  ${segHtml('statType', type, [['income', '수입'], ['expense', '지출'], ['saving', '저축·투자']])}
   <section class="card"><h2>카테고리별 비율</h2>${donut}</section>
   <section class="card">
     <h2>최근 6개월 <span class="key"><span><s style="background:var(--inc)"></s>수입</span><span><s style="background:var(--exp)"></s>지출</span></span></h2>
@@ -847,7 +866,7 @@ function subItem(s) {
   </button></li>`;
 }
 function viewSubs() {
-  const act = S.subs.filter(s => s.active && s.rtype !== 'income'), u = ui.subUnit;
+  const act = S.subs.filter(s => s.active && (s.rtype || 'expense') === 'expense'), u = ui.subUnit;
   const fixedInc = S.subs.filter(s => s.active && s.rtype === 'income').reduce((a, s) => a + conv(s, u), 0);
   const total = act.reduce((a, s) => a + conv(s, u), 0);
   const cnt = k => S.subs.filter(s => s.cycle === k).length;
@@ -908,7 +927,7 @@ function viewSet() {
   </section>
   <section class="card">
     <h2>카테고리 <button data-act="addCat">+ 추가</button></h2>
-    ${segHtml('catType', ui.catType, [['expense', '지출'], ['income', '수입']])}
+    ${segHtml('catType', ui.catType, [['income', '수입'], ['expense', '지출'], ['saving', '저축·투자']])}
     <div class="chips">${CATS[ui.catType].map(([c, e]) => `<button class="chip" data-act="editCat" data-v="${esc(c)}">${esc(e)} ${esc(c)}${ui.catType === 'expense' && (S.cbud || {})[c] ? ` · 예산 ${man(S.cbud[c])}` : ''}</button>`).join('')}</div>
     <p class="note">눌러서 이름·아이콘${ui.catType === 'expense' ? '·월 예산' : ''}을 고칠 수 있어요. 예산을 넣은 카테고리는 통계에서 남은 금액이 보여요.</p>
   </section>
@@ -942,8 +961,9 @@ function viewSet() {
 }
 
 /* ---------- 입력 시트 ---------- */
-function openSheet() { renderSheet(); document.getElementById('scrim').classList.add('show'); }
-function closeSheet() { document.getElementById('scrim').classList.remove('show'); draft = null; }
+// 입력 창이 떠 있는 동안에는 뒤 화면이 따라 움직이지 않게 스크롤을 잠근다
+function openSheet() { renderSheet(); document.getElementById('scrim').classList.add('show'); document.documentElement.classList.add('lock'); }
+function closeSheet() { document.getElementById('scrim').classList.remove('show'); document.documentElement.classList.remove('lock'); draft = null; }
 function syncDraft() {
   if (!draft) return;
   document.querySelectorAll('#sheet [data-f]').forEach(el => {
@@ -980,7 +1000,7 @@ function renderSheet() {
     const tr = d.type === 'transfer';
     el.innerHTML = `<div class="grab"></div><h3>${d.id ? '내역 수정' : '내역 추가'}${tr ? '' : `<button data-act="sms">💬 문자 붙여넣기</button>`}</h3>
       ${d.smsOpen && !tr ? `<div class="smsbox"><textarea class="in" data-f="sms" placeholder="결제 문자를 여기에 붙여넣으세요&#10;예: 신한카드 승인 12,500원 11/16 12:30 스타벅스">${esc(d.sms || '')}</textarea><button class="btn block" data-act="smsParse">문자에서 금액·가게 채우기</button></div>` : ''}
-      ${segHtml('type', d.type, [['expense', '지출'], ['income', '수입'], ...(S.accounts.length || tr ? [['transfer', '이체']] : [])])}
+      ${segHtml('type', d.type, [['income', '수입'], ['expense', '지출'], ['saving', '저축·투자'], ...(tr ? [['transfer', '이체']] : [])])}
       ${(cur => `<label class="f">금액${cur === 'KRW' ? '' : ` (${cur})`}</label>
       <div class="chips" style="margin-bottom:8px">${['KRW', ...FX].map(c => `<button class="chip ${cur === c ? 'on' : ''}" data-act="cur" data-v="${c}">${c === 'KRW' ? '원' : c}</button>`).join('')}</div>
       ${cur === 'KRW' ? `<div class="won"><input class="in amtin amt" data-f="amount" inputmode="numeric" placeholder="0" value="${d.amount ? d.amount.toLocaleString('ko-KR') : ''}"></div>`
@@ -989,6 +1009,7 @@ function renderSheet() {
       <p class="note">통장에서 카드값을 내거나 저축 통장으로 옮길 때 써요. 수입·지출 통계에는 들어가지 않아요.</p>`
       : `<label class="f">카테고리</label>
       <div class="chips">${CATS[d.type].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
+      <p class="note" style="margin-top:6px">카테고리를 꾹 누르면 이름·아이콘을 고칠 수 있어요. 새로 만들기는 설정에서 해요.</p>
       ${accPick(d.type === 'expense' ? '결제 수단 · 자산 탭 잔액에 반영' : '입금 계좌 · 자산 탭 잔액에 반영', 'acc', d.acc)}`}
       <label class="f">날짜</label><input class="in" type="date" data-f="date" value="${d.date}">
       <label class="f">메모</label><input class="in" data-f="memo" maxlength="40" placeholder="예: 점심 김치찌개" value="${esc(d.memo)}">
@@ -1002,7 +1023,7 @@ function renderSheet() {
   } else if (d.kind === 'sub') {
     const rt = d.rtype || 'expense';
     el.innerHTML = `<div class="grab"></div><h3>${d.id ? '고정 항목 수정' : '고정 항목 추가'}</h3>
-      ${segHtml('rtype', rt, [['expense', '지출 (구독·월세·보험 등)'], ['income', '수입 (월급 등)']])}
+      ${segHtml('rtype', rt, [['income', '수입'], ['expense', '지출'], ['saving', '저축·투자']])}
       <label class="f" style="margin-top:0">카테고리</label>
       <div class="chips">${CATS[rt].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
       <label class="f">이름</label><input class="in" data-f="name" maxlength="30" placeholder="예: 음악 스트리밍" value="${esc(d.name)}">
@@ -1085,7 +1106,7 @@ const ACT = {
   addAcc(v) { draft = { kind: 'acc', id: null, side: v, name: '', accKind: ACC_KINDS[v][0][0], amount: 0 }; openSheet(); },
   editTx(v) { const t = S.tx.find(x => x.id === v); if (t) { draft = { ...t, kind: 'tx' }; openSheet(); } },
   editSub(v) { const s = S.subs.find(x => x.id === v); if (s) { draft = { rtype: 'expense', category: '구독', ...s, kind: 'sub' }; openSheet(); } },
-  rtype(v) { syncDraft(); draft.rtype = v; draft.category = v === 'expense' ? '구독' : CATS.income[0][0]; draft.acc = lastAcc(v); renderSheet(); },
+  rtype(v) { syncDraft(); draft.rtype = v; draft.category = v === 'expense' ? '구독' : CATS[v][0][0]; draft.acc = lastAcc(v); renderSheet(); },
   statView(v) { ui.statView = v; render(); },
   goyear() { ui.tab = 'stat'; ui.statView = 'year'; ui.year = new Date().getFullYear(); window.scrollTo(0, 0); render(); },
   catType(v) { ui.catType = v; render(); },
@@ -1129,7 +1150,16 @@ const ACT = {
     Object.assign(draft, p, { smsOpen: false });
     renderSheet(); toast('문자 내용을 채웠어요. 확인하고 저장하세요');
   },
-  close() { closeSheet(); },
+  close() { if (draft && draft.back) { draft = draft.back; renderSheet(); } else closeSheet(); },
+  // 내역·고정 항목 입력 창에서 카테고리를 꾹 눌렀을 때: 입력하던 내용은 back에 넣어 두고 카테고리 수정 창을 띄운다
+  catEdit(v) {
+    if (!draft || (draft.kind !== 'tx' && draft.kind !== 'sub')) return;
+    syncDraft();
+    const ctype = draft.kind === 'sub' ? (draft.rtype || 'expense') : draft.type, c = (CATS[ctype] || []).find(x => x[0] === v);
+    if (!c) return;
+    draft = { kind: 'cat', id: v, ctype, name: v, emoji: c[1], cbud: (S.cbud || {})[v] || '', back: draft };
+    renderSheet();
+  },
   save() {
     syncDraft();
     const d = draft;
@@ -1139,14 +1169,17 @@ const ACT = {
       if (!name) return toast('이름을 입력해 주세요');
       if (list.some(c => c[0] === name && c[0] !== d.id)) return toast('같은 이름의 카테고리가 있어요');
       if (d.id) { const c = list.find(x => x[0] === d.id); c[0] = name; c[1] = emoji; } else list.push([name, emoji]);
-      S.cats = { expense: CATS.expense, income: CATS.income, [d.ctype]: list };
+      S.cats = { expense: CATS.expense, income: CATS.income, saving: CATS.saving, [d.ctype]: list };
       if (d.id && d.id !== name) { // 이름을 바꾸면 이미 적은 내역·고정 항목도 따라 바꾼다
         for (const t of S.tx) if (t.type === d.ctype && t.category === d.id) t.category = name;
         for (const s of S.subs) if ((s.rtype || 'expense') === d.ctype && s.category === d.id) s.category = name;
         if (S.cbud) delete S.cbud[d.id];
       }
       if (d.ctype === 'expense') { S.cbud = S.cbud || {}; if (num(d.cbud)) S.cbud[name] = num(d.cbud); else delete S.cbud[name]; }
-      closeSheet(); save(); render();
+      if (d.back) { // 내역 입력 중에 꾹 눌러 들어온 경우: 입력하던 창으로 돌아간다
+        if (d.back.category === d.id) d.back.category = name;
+        draft = d.back; save(); renderSheet(); render();
+      } else { closeSheet(); save(); render(); }
       return toast('카테고리를 저장했어요');
     }
     if (d.kind === 'tx') {
@@ -1207,9 +1240,11 @@ const ACT = {
       if (draft.id === '구독') return toast('구독 카테고리는 지울 수 없어요');
       const rest = CATS[draft.ctype].filter(c => c[0] !== draft.id);
       if (!rest.length) return toast('카테고리는 하나 이상 있어야 해요');
-      S.cats = { expense: CATS.expense, income: CATS.income, [draft.ctype]: rest };
+      S.cats = { expense: CATS.expense, income: CATS.income, saving: CATS.saving, [draft.ctype]: rest };
       if (S.cbud) delete S.cbud[draft.id];
-      save(); closeSheet(); render();
+      const back = draft.back;
+      if (back) { if (back.category === draft.id) back.category = rest[0][0]; draft = back; save(); renderSheet(); render(); }
+      else { save(); closeSheet(); render(); }
       return toast('삭제했어요');
     }
     const key = { tx: 'tx', sub: 'subs', acc: 'accounts' }[draft.kind], id = draft.id;
@@ -1236,7 +1271,18 @@ const ACT = {
   }
 };
 
+// 카테고리 칩을 0.5초 넘게 누르고 있으면 수정 창을 연다
+let pressT, pressed = false;
+document.addEventListener('pointerdown', e => {
+  pressed = false; clearTimeout(pressT);
+  const b = e.target.closest('#sheet [data-act=cat]');
+  if (b) pressT = setTimeout(() => { pressed = true; ACT.catEdit(b.dataset.v); }, 550);
+});
+for (const ev of ['pointerup', 'pointercancel']) document.addEventListener(ev, () => clearTimeout(pressT));
+document.getElementById('sheet').addEventListener('scroll', () => clearTimeout(pressT), { passive: true });
+document.addEventListener('contextmenu', e => { if (e.target.closest('#sheet .chip')) e.preventDefault(); });
 document.addEventListener('click', e => {
+  if (pressed) { pressed = false; return; } // 꾹 누른 뒤 손을 뗄 때 생기는 클릭은 무시
   if (e.target.id === 'scrim') return closeSheet();
   const b = e.target.closest('[data-act]');
   if (b && ACT[b.dataset.act]) ACT[b.dataset.act](b.dataset.v, b);
