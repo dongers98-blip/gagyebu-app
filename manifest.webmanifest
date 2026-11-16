@@ -1,7 +1,7 @@
 {
   "name": "가계부",
   "short_name": "가계부",
-  "description": "수입·지출과 월/연 구독료를 함께 관리하는 가계부",
+  "description": "수입·지출, 구독료, 자산을 함께 관리하는 가계부",
   "lang": "ko",
   "start_url": "./",
   "scope": "./",
@@ -12,5 +12,10 @@
   "icons": [
     { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
-  ]
+  ],
+  "share_target": {
+    "action": "./",
+    "method": "GET",
+    "params": { "title": "title", "text": "text" }
+  }
 }
