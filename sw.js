@@ -1,9 +1,11 @@
 // 오프라인에서도 열리도록 앱 파일을 캐시한다. 파일을 고치면 VERSION을 올린다.
-const VERSION = 'gagyebu-v4';
+const VERSION = 'gagyebu-v5';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg'];
+// 브라우저에 남아 있는 옛 파일을 쓰지 않고, 서버에 최신인지 확인한 뒤 받는다.
+const NO_CACHE = { cache: 'no-cache' };
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, NO_CACHE)))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
@@ -24,7 +26,7 @@ self.addEventListener('fetch', e => {
   e.respondWith(
     caches.open(VERSION).then(async cache => {
       const hit = await cache.match(req);
-      const fresh = fetch(req).then(res => {
+      const fresh = fetch(req, NO_CACHE).then(res => {
         if (res.ok) cache.put(req, res.clone());
         return res;
       }).catch(() => hit);
