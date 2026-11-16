@@ -130,6 +130,8 @@ button{cursor:pointer;border:0;background:none;padding:0}
 .eq em{align-self:center;font-style:normal;color:var(--sub);font-weight:700}
 .total{display:flex;justify-content:space-between;padding-top:12px;margin-top:4px;border-top:2px solid var(--line);font-weight:700}
 
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.kpis .mini b{font-size:14px;white-space:nowrap}
 /* 결산 */
 .story{list-style:none;margin:14px 0 0;padding:0;font-size:14px}
 .story li{display:flex;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
@@ -227,6 +229,26 @@ const CYC = { daily: '매일', weekly: '매주', monthly: '매월', yearly: '매
 const PER_YEAR = { daily: 365, weekly: 365 / 7, monthly: 12, yearly: 1 };
 const UNITS = { day: ['일', '하루', 365], week: ['주', '한 주', 365 / 7], month: ['월', '한 달', 12], year: ['년', '1년', 1] };
 const PALETTE = ['#0f8f6f','#2f6fed','#e0484d','#d98a00','#8e5bd6','#14a3c7','#e2619f','#6c8a1f','#c7632b','#5a6b7a','#3bb273','#a1543f'];
+// 외화: 금액을 외화로 적으면 그날 환율로 원화로 바꿔 저장한다. 환율(S.fx)은 하루 한 번 인터넷에서 받는다.
+const FX = ['USD', 'JPY', 'CNY', 'EUR', 'GBP'], FX_SIGN = { USD: '$', JPY: '¥', CNY: '元', EUR: '€', GBP: '£' };
+const fxRate = c => (S.fx && S.fx.rates && S.fx.rates[c]) || 0; // 1 외화 = 몇 원
+const fxNote = (cur, v) => {
+  const r = fxRate(cur), f = parseFloat(v) || 0;
+  return r ? `${f ? `≈ ${won(f * r)} · ` : ''}1 ${cur} = ${r.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}원 (${S.fx.date} 환율)`
+    : '환율을 아직 받지 못했어요. 인터넷에 연결한 뒤 설정에서 환율을 새로 받아 주세요.';
+};
+async function refreshFx(force) {
+  if (!force && S.fx && S.fx.date === today()) return true;
+  try {
+    const r = await (await fetch('https://open.er-api.com/v6/latest/KRW', { cache: 'no-store' })).json();
+    const rates = {};
+    for (const c of FX) if (r.rates && r.rates[c] > 0) rates[c] = 1 / r.rates[c];
+    if (!Object.keys(rates).length) return false;
+    S.fx = { date: today(), rates }; save();
+    if (draft && draft.kind === 'tx') { syncDraft(); renderSheet(); } else if (!draft && ui.tab === 'set') render();
+    return true;
+  } catch (e) { return false; }
+}
 const TYPE_NAME = { expense: '지출', income: '수입', transfer: '이체' };
 const emojiOf = (type, cat) => ((CATS[type] || []).find(c => c[0] === cat) || [0, '📌'])[1];
 const accEmoji = (side, kind) => (ACC_KINDS[side].find(c => c[0] === kind) || [0, '📦'])[1];
@@ -456,7 +478,7 @@ const isPaySms = t => /승인|결제|출금|입금|이체|사용/.test(t) && !/�
 /* ---------- 화면 상태 ---------- */
 const ui = { tab: 'home', mode: 'month', date: today(), search: false, q: '', qcat: '', statMonth: today().slice(0, 7), statType: 'expense', year: new Date().getFullYear(), statView: 'month', catType: 'expense', subUnit: 'month', subFilter: 'all' };
 let draft = null;
-const TABS = [['home', '🏠', '홈'], ['stat', '📊', '통계'], ['subs', '🔁', '고정'], ['bs', '🏦', '자산'], ['set', '⚙️', '설정']];
+const TABS = [['home', '🏠', '홈'], ['stat', '📊', '통계'], ['subs', '🔁', '고정'], ['set', '⚙️', '설정']];
 
 function render() {
   const titles = { home: '가계부', stat: '통계', subs: '고정 수입·지출', bs: '대차대조표', set: '설정' };
@@ -477,7 +499,7 @@ const navHtml = (prev, next, label) => `<div class="monthnav"><button class="ico
 function txItem(t, withDate) {
   const tr = t.type === 'transfer', an = accName(t.acc);
   const sub = tr ? `${esc(an || '등록 안 한 곳')} → ${esc(accName(t.to) || '등록 안 한 곳')}`
-    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.smsId ? ' · 문자 자동 등록' : ''}${t.dup ? ' · ⚠ 중복 의심' : ''}`;
+    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.cur ? ` · ${FX_SIGN[t.cur] || t.cur}${t.famt}` : ''}${t.smsId ? ' · 문자 자동 등록' : ''}${t.dup ? ' · ⚠ 중복 의심' : ''}`;
   return `<li><button class="item" data-act="editTx" data-v="${t.id}">
     <span class="em">${tr ? '🔄' : emojiOf(t.type, t.category)}</span>
     <span class="mid"><b>${esc(t.memo || t.category)}</b><span>${withDate ? fmtDay(t.date) + ' · ' : ''}${sub}</span></span>
@@ -571,6 +593,77 @@ function budLine(type, c, a) {
   const left = b - a;
   return `<span class="cmp num">예산 ${won(b)} · ${left >= 0 ? `${won(left)} 남음` : `<b class="exp">${won(-left)} 초과</b>`}</span>`;
 }
+// 월별 통계의 추가 분석 카드들. 여기서는 실제로 적은 내역 그대로(연 구독을 나누지 않고) 계산한다.
+function extraStats(ym) {
+  const [y, m] = ym.split('-').map(Number), n = daysIn(y, m - 1), tx = monthTx(ym), ex = tx.filter(t => t.type === 'expense');
+  if (!tx.length) return '';
+  const exp = sum(tx, 'expense'), inc = sum(tx, 'income'), pym = shiftMonth(ym, -1), ptx = monthTx(pym), pex = ptx.filter(t => t.type === 'expense'), pexp = sum(ptx, 'expense');
+  const isCur = ym === today().slice(0, 7), dn = isCur ? +today().slice(8) : n; // 이 달에서 지나간 날 수
+  const byDay = Array(n).fill(0); for (const t of ex) byDay[+t.date.slice(8) - 1] += t.amount;
+  const kpi = (l, v, cls) => `<div class="mini"><span>${l}</span><b class="num ${cls || ''}">${v}</b></div>`;
+  const card = (title, body, side) => `<section class="card"><h2>${title}${side ? ` <span class="num">${side}</span>` : ''}</h2>${body}</section>`;
+  const vbars = rows => { const mx = Math.max(1, ...rows.map(r => r[1])); return `<div class="bars" style="height:110px">${rows.map(([l, v]) => `<div><span class="num">${man(v)}</span><div class="pair"><i style="height:${v / mx * 100}%;background:var(--exp);width:60%;max-width:26px"></i></div>${l}</div>`).join('')}</div>`; };
+  const hbars = (rows, fmt) => { const mx = Math.max(1, ...rows.map(r => r[1])); return rows.map(([l, v, s], i) => `<div class="catrow"><span>${l}${s ? `<small>${s}</small>` : ''}</span><span class="am num">${(fmt || won)(v)}</span><div class="bar"><i style="width:${v / mx * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></div></div>`).join(''); };
+  const out = [];
+
+  // 1) 한눈에 보는 지표
+  const net = inc - exp, zero = byDay.slice(0, dn).filter(v => !v).length;
+  out.push(card('이 달 요약', `<div class="kpis">
+    ${kpi('남은 돈', (net > 0 ? '+' : '') + won(net), net < 0 ? 'exp' : 'inc')}${kpi('저축률', inc ? Math.round(net / inc * 100) + '%' : '-')}
+    ${kpi('하루 평균 지출', won(exp / dn))}${kpi('한 건 평균', ex.length ? won(exp / ex.length) : '-')}
+    ${kpi('지출 건수', ex.length + '건')}${kpi('무지출 일수', `${zero}일 / ${dn}일`)}
+    ${kpi('지난달 대비', pexp ? `${exp >= pexp ? '▲' : '▼'}${Math.abs(Math.round((exp - pexp) / pexp * 100))}%` : '-', pexp ? (exp > pexp ? 'exp' : 'inc') : '')}${kpi(isCur ? '월말 예상 지출' : '지난달 지출', won(isCur ? exp / dn * n : pexp))}
+  </div>`));
+
+  if (ex.length) {
+    // 2) 누적 지출 흐름: 이번 달(실선)과 지난달(점선)
+    const cum = a => { let s = 0; return a.map(v => s += v); };
+    const pn = daysIn(...(p => [p[0], p[1] - 1])(pym.split('-').map(Number))), pDay = Array(pn).fill(0); for (const t of pex) pDay[+t.date.slice(8) - 1] += t.amount;
+    const c1 = cum(byDay).slice(0, dn), c0 = cum(pDay), top = Math.max(1, c1[c1.length - 1] || 0, c0[c0.length - 1] || 0);
+    const pts = (c, len) => c.map((v, i) => `${(len > 1 ? i / (len - 1) : 0) * 300},${100 - v / top * 96}`).join(' ');
+    out.push(card('누적 지출 흐름', `<svg viewBox="0 0 300 104" style="width:100%;height:120px;display:block" role="img" aria-label="날짜별 누적 지출">
+      ${pexp ? `<polyline points="${pts(c0, Math.max(n, pn))}" fill="none" stroke="var(--sub)" stroke-width="1.5" stroke-dasharray="4 4" opacity=".7"/>` : ''}
+      <polyline points="${pts(c1, Math.max(n, pn))}" fill="none" stroke="var(--exp)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <div class="axis num"><span>1일</span><span>${Math.round(n / 2)}일</span><span>${n}일</span></div>
+      <div class="key" style="margin-top:8px"><span><s style="background:var(--exp)"></s>이번 달 ${won(exp)}</span>${pexp ? `<span><s style="background:var(--sub)"></s>지난달 ${won(pexp)}</span>` : ''}</div>`));
+
+    // 3) 요일별 · 4) 주차별
+    const dow = Array(7).fill(0), wk = [], first = new Date(y, m - 1, 1).getDay();
+    for (const t of ex) { const d = +t.date.slice(8); dow[parse(t.date).getDay()] += t.amount; const w = Math.floor((d - 1 + first) / 7); wk[w] = (wk[w] || 0) + t.amount; }
+    const maxDow = dow.indexOf(Math.max(...dow));
+    out.push(card('요일별 지출', vbars(DOW.map((d, i) => [d, dow[i]])), `${DOW[maxDow]}요일에 가장 많이 써요`));
+    out.push(card('주차별 지출', vbars(Array.from({ length: Math.ceil((n + first) / 7) }, (_, i) => [`${i + 1}주`, wk[i] || 0]))));
+
+    // 5) 금액대별 건수
+    const bands = [['1만원 미만', 0, 1e4], ['1만~3만원', 1e4, 3e4], ['3만~5만원', 3e4, 5e4], ['5만~10만원', 5e4, 1e5], ['10만원 이상', 1e5, Infinity]]
+      .map(([l, a, b]) => { const g = ex.filter(t => t.amount >= a && t.amount < b); return [l, g.length, won(g.reduce((s, t) => s + t.amount, 0))]; }).filter(r => r[1]);
+    out.push(card('금액대별 건수', hbars(bands, v => v + '건')));
+
+    // 6) 큰 지출 TOP 5 · 7) 자주 쓴 곳 TOP 5
+    out.push(card('큰 지출 TOP 5', `<ul class="list">${[...ex].sort((a, b) => b.amount - a.amount).slice(0, 5).map(t => txItem(t, true)).join('')}</ul>`));
+    const memo = Object.create(null); for (const t of ex) if (t.memo) { const g = memo[t.memo] || (memo[t.memo] = [0, 0]); g[0]++; g[1] += t.amount; }
+    const freq = Object.entries(memo).filter(e => e[1][0] > 1).sort((a, b) => b[1][0] - a[1][0] || b[1][1] - a[1][1]).slice(0, 5);
+    if (freq.length) out.push(card('자주 쓴 곳 TOP 5', hbars(freq.map(([k, g]) => [esc(k), g[1], g[0] + '번']))));
+
+    // 8) 지난달과 카테고리 비교
+    const cat = l => { const o = {}; for (const t of l) o[t.category] = (o[t.category] || 0) + t.amount; return o; };
+    const c = cat(ex), pc = cat(pex), names = [...new Set([...Object.keys(c), ...Object.keys(pc)])].sort((a, b) => Math.abs((c[b] || 0) - (pc[b] || 0)) - Math.abs((c[a] || 0) - (pc[a] || 0)));
+    if (pexp) out.push(card('지난달과 카테고리 비교', names.slice(0, 8).map(k => { const d = (c[k] || 0) - (pc[k] || 0); return `<div class="setrow"><span>${emojiOf('expense', k)} ${esc(k)}<small>${won(pc[k] || 0)} → ${won(c[k] || 0)}</small></span><b class="num ${d > 0 ? 'exp' : d < 0 ? 'inc' : ''}">${d > 0 ? '+' : ''}${won(d)}</b></div>`; }).join('')));
+
+    // 9) 고정 지출과 그 밖의 지출
+    const fixed = ex.filter(t => t.subId).reduce((s, t) => s + t.amount, 0);
+    if (fixed) out.push(card('고정 지출과 그 밖의 지출', `<div class="bar" style="height:10px"><i style="width:${fixed / exp * 100}%;background:var(--warn);border-radius:0"></i><i style="flex:1;border-radius:0"></i></div>
+      <div class="key" style="margin-top:8px;flex-wrap:wrap"><span><s style="background:var(--warn)"></s>고정·구독 ${won(fixed)} (${Math.round(fixed / exp * 100)}%)</span><span><s style="background:var(--accent)"></s>그 밖 ${won(exp - fixed)}</span></div>`));
+
+    // 10) 외화로 쓴 돈
+    const fx = {}; for (const t of ex) if (t.cur) { const g = fx[t.cur] || (fx[t.cur] = [0, 0]); g[0] += t.famt; g[1] += t.amount; }
+    if (Object.keys(fx).length) out.push(card('외화로 쓴 돈', Object.entries(fx).map(([k, g]) => `<div class="setrow"><span>${k}<small>${FX_SIGN[k] || ''}${g[0].toLocaleString('ko-KR', { maximumFractionDigits: 2 })}</small></span><b class="num">${won(g[1])}</b></div>`).join('')));
+  }
+  // 11) 수입원별
+  const src = {}; for (const t of tx) if (t.type === 'income') src[t.category] = (src[t.category] || 0) + t.amount;
+  if (Object.keys(src).length) out.push(card('수입원별', hbars(Object.entries(src).sort((a, b) => b[1] - a[1]).map(([k, v]) => [`${emojiOf('income', k)} ${esc(k)}`, v, Math.round(v / inc * 100) + '%'])), won(inc)));
+  return out.join('');
+}
 function viewStatMonth() {
   const ym = ui.statMonth, [y, m] = ym.split('-').map(Number), type = ui.statType;
   const items = statItems(ym), total = sum(items, type);
@@ -612,6 +705,7 @@ function viewStatMonth() {
     <div class="axis num"><span>1일</span><span>${Math.round(n / 2)}일</span><span>${n}일</span></div>
     <p class="note">가장 많이 쓴 날: ${dsum ? `${daily.indexOf(dmax) + 1}일 ${won(dmax)}` : '없음'}</p>
   </section>
+  ${extraStats(ym)}
   ${amort ? `<p class="note" style="text-align:center;padding:0 12px">연 단위 구독은 결제한 달에 몰지 않고 매달 1/12씩 나눠 반영했어요.</p>` : ''}`;
 }
 
@@ -818,6 +912,12 @@ function viewSet() {
     <div class="chips">${CATS[ui.catType].map(([c, e]) => `<button class="chip" data-act="editCat" data-v="${esc(c)}">${esc(e)} ${esc(c)}${ui.catType === 'expense' && (S.cbud || {})[c] ? ` · 예산 ${man(S.cbud[c])}` : ''}</button>`).join('')}</div>
     <p class="note">눌러서 이름·아이콘${ui.catType === 'expense' ? '·월 예산' : ''}을 고칠 수 있어요. 예산을 넣은 카테고리는 통계에서 남은 금액이 보여요.</p>
   </section>
+  <section class="card">
+    <h2>환율 <span>${S.fx ? S.fx.date + ' 기준' : '아직 받지 못함'}</span></h2>
+    ${S.fx ? FX.filter(c => fxRate(c)).map(c => `<div class="setrow"><span>1 ${c} (${FX_SIGN[c]})</span><b class="num">${fxRate(c).toLocaleString('ko-KR', { maximumFractionDigits: 2 })}원</b></div>`).join('') : ''}
+    <p class="note">내역을 적을 때 금액 위에서 통화를 고르면 그날 환율로 원화로 바뀌어 저장돼요. 환율은 앱을 열 때 하루 한 번 인터넷에서 받아요.</p>
+    <button class="btn block" data-act="fxNow">지금 새로 받기</button>
+  </section>
   ${NATIVE ? (on => `<section class="card">
     <h2>앱 잠금 <span class="${on ? 'inc' : ''}">${on ? '켜짐' : '꺼짐'}</span></h2>
     <p class="note" style="margin:0">앱을 열 때 지문이나 휴대폰 잠금(PIN·패턴)을 확인해요. 켜 두면 화면 캡처와 최근 앱 미리보기도 막혀요.</p>
@@ -832,7 +932,7 @@ function viewSet() {
   </section>
   ${NATIVE ? (ok => `<section class="card">
     <h2>문자 자동 등록 <span class="${ok ? 'inc' : ''}">${ok ? '켜짐' : '꺼짐'}</span></h2>
-    <p class="note" style="margin:0">앱을 열 때마다 새로 온 카드·은행 결제 문자를 읽어 가계부에 자동으로 넣어요. 이 앱에는 인터넷 권한이 없어서 문자와 가계부 내용이 휴대폰 밖으로 나가지 않아요.</p>
+    <p class="note" style="margin:0">앱을 열 때마다 새로 온 카드·은행 결제 문자를 읽어 가계부에 자동으로 넣어요. 인터넷은 환율을 받아올 때만 쓰고, 문자와 가계부 내용은 휴대폰 밖으로 보내지 않아요.</p>
     <button class="btn block" data-act="${ok ? 'smsImport' : 'smsPerm'}">${ok ? '지난 30일 문자 가져오기' : '문자 읽기 허용하기'}</button>
   </section>`)(Native.smsStatus() === 'granted') : `<section class="card">
     <h2>결제 문자로 등록하기</h2>
@@ -855,7 +955,7 @@ function syncDraft() {
 const snum = el => ((el.classList.contains('signed') && /^\s*-/.test(el.value) ? -1 : 1) * num(el.value)) || 0;
 // 내역·구독을 자산 탭의 통장·카드에 연결하는 선택 칩
 function accPick(label, act, cur, none) {
-  if (!S.accounts.length) return `<p class="note">자산 탭에 통장·카드를 등록하면 여기서 골라 잔액에 자동으로 반영할 수 있어요.</p>`;
+  if (!S.accounts.length) return ''; // 자산 탭을 없앴으므로, 예전에 등록해 둔 통장·카드가 있을 때만 보여 준다
   const list = [...S.accounts].sort((a, b) => sgn(b) - sgn(a));
   return `<label class="f">${label}</label><div class="chips"><button class="chip ${accOf(cur) ? '' : 'on'}" data-act="${act}" data-v="">${none || '연결 안 함'}</button>${list.map(a => `<button class="chip ${cur === a.id ? 'on' : ''}" data-act="${act}" data-v="${a.id}">${accEmoji(a.side, a.kind)} ${esc(a.name)}</button>`).join('')}</div>`;
 }
@@ -880,8 +980,11 @@ function renderSheet() {
     const tr = d.type === 'transfer';
     el.innerHTML = `<div class="grab"></div><h3>${d.id ? '내역 수정' : '내역 추가'}${tr ? '' : `<button data-act="sms">💬 문자 붙여넣기</button>`}</h3>
       ${d.smsOpen && !tr ? `<div class="smsbox"><textarea class="in" data-f="sms" placeholder="결제 문자를 여기에 붙여넣으세요&#10;예: 신한카드 승인 12,500원 11/16 12:30 스타벅스">${esc(d.sms || '')}</textarea><button class="btn block" data-act="smsParse">문자에서 금액·가게 채우기</button></div>` : ''}
-      ${segHtml('type', d.type, [['expense', '지출'], ['income', '수입'], ['transfer', '이체']])}
-      ${amt('금액')}
+      ${segHtml('type', d.type, [['expense', '지출'], ['income', '수입'], ...(S.accounts.length || tr ? [['transfer', '이체']] : [])])}
+      ${(cur => `<label class="f">금액${cur === 'KRW' ? '' : ` (${cur})`}</label>
+      <div class="chips" style="margin-bottom:8px">${['KRW', ...FX].map(c => `<button class="chip ${cur === c ? 'on' : ''}" data-act="cur" data-v="${c}">${c === 'KRW' ? '원' : c}</button>`).join('')}</div>
+      ${cur === 'KRW' ? `<div class="won"><input class="in amtin amt" data-f="amount" inputmode="numeric" placeholder="0" value="${d.amount ? d.amount.toLocaleString('ko-KR') : ''}"></div>`
+        : `<input class="in amtin famt" data-f="famt" inputmode="decimal" placeholder="0" value="${esc(d.famt || '')}"><p class="note" id="fxNote">${fxNote(cur, d.famt)}</p>`}`)(d.cur || 'KRW')}
       ${tr ? `${accPick('보내는 곳', 'acc', d.acc, '등록 안 한 곳')}${S.accounts.length ? accPick('받는 곳', 'accTo', d.to, '등록 안 한 곳') : ''}
       <p class="note">통장에서 카드값을 내거나 저축 통장으로 옮길 때 써요. 수입·지출 통계에는 들어가지 않아요.</p>`
       : `<label class="f">카테고리</label>
@@ -966,6 +1069,8 @@ const ACT = {
   year(v) { ui.year = +v; window.scrollTo(0, 0); render(); },
   gostat(v) { ui.statView = 'month'; ui.statMonth = v; ui.statType = 'expense'; ui.tab = 'stat'; window.scrollTo(0, 0); render(); },
   transfer() { newTx({ type: 'transfer', category: '이체', acc: '' }); },
+  cur(v) { syncDraft(); draft.cur = v; if (draft.id && draft.rate) delete draft.rate; renderSheet(); },
+  async fxNow(v, btn) { btn.textContent = '받는 중…'; toast(await refreshFx(true) ? '환율을 새로 받았어요' : '환율을 받지 못했어요. 인터넷 연결을 확인해 주세요'); if (ui.tab === 'set' && !draft) render(); },
   smsPerm() { Native.requestSms(); },
   smsImport() { toast('문자함을 확인하고 있어요'); Native.importSms(30); },
   acc(v) { syncDraft(); draft.acc = v; draft.accTouched = true; renderSheet(); },
@@ -1045,6 +1150,13 @@ const ACT = {
       return toast('카테고리를 저장했어요');
     }
     if (d.kind === 'tx') {
+      const foreign = d.cur && d.cur !== 'KRW';
+      if (foreign) { // 외화는 원화로 바꿔 저장한다. 고칠 때는 처음 적은 날의 환율을 그대로 쓴다.
+        const f = parseFloat(d.famt) || 0, r = (d.id && d.rate) || fxRate(d.cur);
+        if (!f) return toast('금액을 입력해 주세요');
+        if (!r) return toast('환율을 아직 받지 못했어요. 인터넷 연결을 확인해 주세요');
+        d.amount = Math.round(f * r); d.rate = r; d.famt = f;
+      }
       if (!d.amount) return toast('금액을 입력해 주세요');
       if (!d.date) return toast('날짜를 선택해 주세요');
       const tr = d.type === 'transfer', a = accOf(d.acc) ? d.acc : '', b = tr && accOf(d.to) ? d.to : '';
@@ -1057,6 +1169,7 @@ const ACT = {
       if (d.date <= today()) applied = tr ? 'transfer' : a;
       if (d.subId) rec.subId = d.subId;
       if (d.smsId) rec.smsId = d.smsId;
+      if (foreign) { rec.cur = d.cur; rec.famt = d.famt; rec.rate = d.rate; }
       const i = S.tx.findIndex(x => x.id === rec.id);
       if (i >= 0) S.tx[i] = rec; else S.tx.push(rec);
       if (!ui.search) ui.date = rec.date;
@@ -1132,6 +1245,7 @@ let searchT;
 document.addEventListener('input', e => {
   const el = e.target;
   if (el.id === 'q') { ui.q = el.value; clearTimeout(searchT); searchT = setTimeout(renderResults, 60); }
+  else if (el.classList.contains('famt')) { const n = document.getElementById('fxNote'); if (n && draft) n.textContent = fxNote(draft.cur, el.value); }
   else if (el.classList.contains('amt')) {
     const neg = el.classList.contains('signed') && /^\s*-/.test(el.value), n = num(el.value);
     el.value = (neg ? '-' : '') + (n ? n.toLocaleString('ko-KR') : '');
@@ -1182,6 +1296,7 @@ document.addEventListener('visibilitychange', () => {
 
 processSubs();
 render();
+refreshFx(); // 오늘 환율을 아직 안 받았으면 받아 둔다
 
 /* ---------- 안드로이드 앱(APK)이 부르는 함수 ---------- */
 // 새로 온 문자 목록 [{id, from, body, date(ms)}]을 받아 결제 문자만 가계부에 넣는다.
