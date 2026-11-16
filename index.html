@@ -211,10 +211,11 @@ textarea.in{min-height:96px;resize:vertical;font-size:14px}
 'use strict';
 /* ---------- 데이터 ---------- */
 const KEY = 'gagyebu.v1';
+const NATIVE = !!window.Native; // 안드로이드 앱(APK) 안에서 실행 중인지. 웹에서는 false
 const CATS = {
   expense: [['식비','🍚'],['카페·간식','☕'],['교통','🚌'],['쇼핑','🛍️'],['생활','🧺'],['주거·통신','🏠'],
-            ['의료·건강','💊'],['문화·여가','🎬'],['교육','📚'],['구독','🔁'],['경조사','🎁'],['기타','📌']],
-  income:  [['급여','💼'],['용돈','💝'],['부수입','🪙'],['금융수입','🏦'],['기타','📌']]
+            ['의료·건강','💊'],['문화·여가','🎬'],['교육','📚'],['구독','🔁'],['경조사','🎁'],['투자','📈'],['기타','📌']],
+  income:  [['급여','💼'],['용돈','💝'],['부수입','🪙'],['금융수입','🏦'],['투자수익','📈'],['기타','📌']]
 };
 const ACC_KINDS = {
   asset: [['현금','💵'],['예금·적금','🏦'],['투자','📈'],['부동산·보증금','🏠'],['받을 돈','🤝'],['기타','📦']],
@@ -361,8 +362,25 @@ function processSubs() {
       advance(sub);
     }
   }
-  if (added) toast(`구독 결제 ${added}건을 가계부에 기록했어요`);
+  // 적금: 납입일이 지난 회차를 '이체'로 기록해 적금 잔액을 늘리고, 나가는 통장 잔액을 줄인다.
+  let paid = 0;
+  for (const a of S.accounts) {
+    const p = a.plan; if (!p) continue;
+    let guard = 0;
+    while (p.next <= t && p.count < p.months && guard++ < 600) {
+      const rec = { id: uid(), type: 'transfer', amount: p.amount, category: '이체', memo: `${a.name} ${p.count + 1}회차 납입`, date: p.next, to: a.id, planId: a.id };
+      if (accOf(p.from)) rec.acc = p.from;
+      S.tx.push(rec); p.count++; paid++;
+      const step = { cycle: 'monthly', nextDate: p.next, anchorDay: p.day }; advance(step); p.next = step.nextDate;
+    }
+  }
+  if (added || paid) toast([added ? `구독 결제 ${added}건` : '', paid ? `적금 납입 ${paid}건` : ''].filter(Boolean).join(', ') + '을 가계부에 기록했어요');
   save();
+}
+// 적금 만기 예상: 매달 같은 금액을 넣는 단리 적금 기준. 이자 소득세 15.4%를 뺀 금액도 함께 낸다.
+function planInfo(amount, months, rate) {
+  const principal = amount * months, interest = amount * months * (months + 1) / 2 * (rate / 100) / 12;
+  return { principal, interest, net: interest * (1 - 0.154) };
 }
 const conv = (s, unit) => s.amount * PER_YEAR[s.cycle] / UNITS[unit][2];
 
@@ -411,11 +429,19 @@ function parseSms(raw) {
     else { const k = SMS_CATS.find(c => c[1].test(memo)); if (k) category = k[0]; }
   }
   const out = { type, amount: num(m[2]), date, memo, category };
-  // 문자에 자산 탭 항목 이름(예: 신한카드)이 들어 있으면 그 항목에 연결한다
-  const hay = norm(t), hit = S.accounts.find(a => a.name.length > 1 && hay.includes(norm(a.name)));
-  if (hit) out.acc = hit.id;
+  const acc = smsAcc(t);
+  if (acc) out.acc = acc;
   return out;
 }
+// 문자가 어느 통장·카드 것인지 추정한다: 항목 이름(예: 신한카드)이 문자에 들어 있으면 그것, 아니면 하나뿐인 카드·통장.
+function smsAcc(text) {
+  const hay = norm(text), named = S.accounts.find(a => a.name.length > 1 && hay.includes(norm(a.name)));
+  if (named) return named.id;
+  const only = (side, kind) => { const l = S.accounts.filter(a => a.side === side && a.kind === kind); return l.length === 1 ? l[0].id : ''; };
+  return /카드/.test(text) && !/체크/.test(text) ? only('liab', '카드값') : only('asset', '예금·적금');
+}
+// 결제·입출금 문자만 고른다. 광고·인증번호·청구 안내는 건너뛴다.
+const isPaySms = t => /승인|결제|출금|입금|이체|사용/.test(t) && !/광고|수신거부|인증번호|인증 번호|쿠폰|이벤트|혜택|상담|예정|청구|명세서/.test(t);
 
 /* ---------- 화면 상태 ---------- */
 const ui = { tab: 'home', mode: 'month', date: today(), search: false, q: '', qcat: '', statMonth: today().slice(0, 7), statType: 'expense', year: new Date().getFullYear(), subUnit: 'month', subFilter: 'all' };
@@ -441,7 +467,7 @@ const navHtml = (prev, next, label) => `<div class="monthnav"><button class="ico
 function txItem(t, withDate) {
   const tr = t.type === 'transfer', an = accName(t.acc);
   const sub = tr ? `${esc(an || '등록 안 한 곳')} → ${esc(accName(t.to) || '등록 안 한 곳')}`
-    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}`;
+    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.smsId ? ' · 문자 자동 등록' : ''}`;
   return `<li><button class="item" data-act="editTx" data-v="${t.id}">
     <span class="em">${tr ? '🔄' : emojiOf(t.type, t.category)}</span>
     <span class="mid"><b>${esc(t.memo || t.category)}</b><span>${withDate ? fmtDay(t.date) + ' · ' : ''}${sub}</span></span>
@@ -735,7 +761,7 @@ function viewBs() {
   const rows = (arr, side) => arr.length ? `<ul class="list">${[...arr].sort((a, b) => bal(b) - bal(a)).map(a => {
       const n = (eff()[a.id] || [0, 0])[1], v = bal(a);
       return `<li><button class="item" data-act="editAcc" data-v="${a.id}">
-      <span class="em">${accEmoji(side, a.kind)}</span><span class="mid"><b>${esc(a.name)}</b><span>${esc(a.kind)}${n ? ` · 내역 ${n}건 반영` : ''}</span></span><span class="amt num ${v < 0 ? 'exp' : ''}">${won(v)}</span></button></li>`; }).join('')}</ul>`
+      <span class="em">${accEmoji(side, a.kind)}</span><span class="mid"><b>${esc(a.name)}</b><span>${esc(a.kind)}${a.plan ? ` · 적금 ${a.plan.count}/${a.plan.months}회` : n ? ` · 내역 ${n}건 반영` : ''}</span></span><span class="amt num ${v < 0 ? 'exp' : ''}">${won(v)}</span></button></li>`; }).join('')}</ul>`
     : `<div class="empty" style="padding:12px 0">${side === 'asset' ? '통장, 현금, 투자금 등을 추가해 보세요' : '카드값, 대출 등을 추가해 보세요'}</div>`;
   return `
   <section class="card">
@@ -771,10 +797,14 @@ function viewSet() {
     <button class="setrow" data-act="exportCsv"><span>엑셀용 CSV 내보내기<small>수입·지출 내역만</small></span><span class="go">›</span></button>
     <button class="setrow" data-act="wipe" id="wipe"><span class="exp">모든 데이터 삭제</span><span class="go">›</span></button>
   </section>
-  <section class="card">
+  ${NATIVE ? (ok => `<section class="card">
+    <h2>문자 자동 등록 <span class="${ok ? 'inc' : ''}">${ok ? '켜짐' : '꺼짐'}</span></h2>
+    <p class="note" style="margin:0">앱을 열 때마다 새로 온 카드·은행 결제 문자를 읽어 가계부에 자동으로 넣어요. 이 앱에는 인터넷 권한이 없어서 문자와 가계부 내용이 휴대폰 밖으로 나가지 않아요.</p>
+    <button class="btn block" data-act="${ok ? 'smsImport' : 'smsPerm'}">${ok ? '지난 30일 문자 가져오기' : '문자 읽기 허용하기'}</button>
+  </section>`)(Native.smsStatus() === 'granted') : `<section class="card">
     <h2>결제 문자로 등록하기</h2>
     <p class="note" style="margin:0">문자 앱에서 결제 문자를 길게 눌러 <b>공유 → 가계부</b>를 고르거나, 문자를 복사한 뒤 + 버튼의 <b>문자 붙여넣기</b>를 누르면 금액·가게·날짜가 채워져요. 앱이 문자함을 직접 읽지는 않아요.</p>
-  </section>
+  </section>`}
   <p class="muted" style="font-size:12px;text-align:center;padding:0 12px">데이터는 이 기기 안에만 저장돼요. 휴대폰을 바꾸거나 브라우저 데이터를 지우기 전에 백업 파일을 내보내 두세요.<br>내역 ${S.tx.length}건 · 구독 ${S.subs.length}개 · 자산 항목 ${S.accounts.length}개</p>`;
 }
 
@@ -795,6 +825,19 @@ function accPick(label, act, cur, none) {
   if (!S.accounts.length) return `<p class="note">자산 탭에 통장·카드를 등록하면 여기서 골라 잔액에 자동으로 반영할 수 있어요.</p>`;
   const list = [...S.accounts].sort((a, b) => sgn(b) - sgn(a));
   return `<label class="f">${label}</label><div class="chips"><button class="chip ${accOf(cur) ? '' : 'on'}" data-act="${act}" data-v="">${none || '연결 안 함'}</button>${list.map(a => `<button class="chip ${cur === a.id ? 'on' : ''}" data-act="${act}" data-v="${a.id}">${accEmoji(a.side, a.kind)} ${esc(a.name)}</button>`).join('')}</div>`;
+}
+// 자산 항목(예금·적금)에 붙는 적금 조건 입력란
+function planFields(d) {
+  if (d.side !== 'asset' || d.accKind !== '예금·적금') return '';
+  const amount = num(d.planAmount), left = num(d.planMonths), months = left + (d.planCount || 0), rate = parseFloat(d.planRate) || 0;
+  const info = amount && months ? planInfo(amount, months, rate) : null;
+  return `<label class="check"><input type="checkbox" data-f="planOn" data-act="planToggle" ${d.planOn ? 'checked' : ''}>매달 자동으로 납입하는 적금</label>
+    ${d.planOn ? `<label class="f">월 납입액</label><div class="won"><input class="in amt" data-f="planAmount" inputmode="numeric" placeholder="0" value="${amount ? amount.toLocaleString('ko-KR') : ''}"></div>
+    <label class="f">다음 납입일 (매달 이 날짜에 납입)</label><input class="in" type="date" data-f="planNext" value="${d.planNext || today()}">
+    <label class="f">연 이자율 (%)</label><input class="in" data-f="planRate" inputmode="decimal" placeholder="예: 3.5" value="${esc(d.planRate || '')}">
+    <label class="f">남은 납입 횟수 (개월)</label><input class="in" data-f="planMonths" inputmode="numeric" placeholder="예: 12" value="${left || ''}">
+    ${accPick('돈이 나가는 통장', 'planFrom', d.planFrom, '등록 안 한 곳')}
+    <p class="note">${info ? `만기까지 원금 ${won(info.principal)}, 예상 이자 ${won(info.interest)} (세후 약 ${won(info.net)}). 단리 적금 기준이고 실제 은행 계산과 조금 다를 수 있어요.` : '납입일이 되면 자동으로 이 적금 잔액이 늘고, 나가는 통장 잔액이 줄어요.'}</p>` : ''}`;
 }
 function renderSheet() {
   const d = draft, el = document.getElementById('sheet');
@@ -833,6 +876,7 @@ function renderSheet() {
       <label class="f">종류</label>
       <div class="chips">${ACC_KINDS[d.side].map(([c, e]) => `<button class="chip ${d.accKind === c ? 'on' : ''}" data-act="accKind" data-v="${c}">${e} ${c}</button>`).join('')}</div>
       ${amt(d.side === 'asset' ? '현재 잔액' : '갚을 금액', true)}
+      ${planFields(d)}
       <p class="note">${d.id && (eff()[d.id] || [0, 0])[1] ? `가계부 내역 ${eff()[d.id][1]}건이 반영된 금액이에요. 실제와 다르면 고쳐서 저장하세요.` : '가계부에서 이 항목을 고른 내역은 여기에 자동으로 더해지고 빠져요.'}</p>
       ${foot}`;
   }
@@ -840,6 +884,7 @@ function renderSheet() {
 
 /* ---------- 동작 ---------- */
 function download(name, text, type) {
+  if (NATIVE) return Native.saveFile(name, text, type); // 안드로이드 앱에서는 저장 위치를 고르는 화면을 띄운다
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type }));
   a.download = name; document.body.appendChild(a); a.click(); a.remove();
@@ -878,6 +923,8 @@ const ACT = {
   year(v) { ui.year = +v; window.scrollTo(0, 0); render(); },
   gostat(v) { ui.statMonth = v; ui.statType = 'expense'; ui.tab = 'stat'; window.scrollTo(0, 0); render(); },
   transfer() { newTx({ type: 'transfer', category: '이체', acc: '' }); },
+  smsPerm() { Native.requestSms(); },
+  smsImport() { toast('문자함을 확인하고 있어요'); Native.importSms(30); },
   acc(v) { syncDraft(); draft.acc = v; draft.accTouched = true; renderSheet(); },
   accTo(v) { syncDraft(); draft.to = v; renderSheet(); },
   subUnit(v) { ui.subUnit = v; render(); },
@@ -890,7 +937,13 @@ const ACT = {
   addAcc(v) { draft = { kind: 'acc', id: null, side: v, name: '', accKind: ACC_KINDS[v][0][0], amount: 0 }; openSheet(); },
   editTx(v) { const t = S.tx.find(x => x.id === v); if (t) { draft = { ...t, kind: 'tx' }; openSheet(); } },
   editSub(v) { const s = S.subs.find(x => x.id === v); if (s) { draft = { ...s, kind: 'sub' }; openSheet(); } },
-  editAcc(v) { const a = S.accounts.find(x => x.id === v); if (a) { draft = { ...a, accKind: a.kind, kind: 'acc', amount: bal(a) }; openSheet(); } },
+  editAcc(v) { const a = S.accounts.find(x => x.id === v); if (a) {
+    const p = a.plan;
+    draft = { ...a, accKind: a.kind, kind: 'acc', amount: bal(a), planOn: !!p, planAmount: p ? p.amount : '', planNext: p ? p.next : '', planRate: p ? String(p.rate) : '', planMonths: p ? p.months - p.count : '', planFrom: p ? p.from : '', planCount: p ? p.count : 0 };
+    openSheet();
+  } },
+  planToggle() { syncDraft(); renderSheet(); },
+  planFrom(v) { syncDraft(); draft.planFrom = v; renderSheet(); },
   type(v) {
     syncDraft(); draft.type = v; draft.category = v === 'transfer' ? '이체' : CATS[v][0][0];
     if (!draft.id && !draft.accTouched) draft.acc = v === 'transfer' ? '' : lastAcc(v);
@@ -934,6 +987,7 @@ const ACT = {
       if (!d.id && !tr && (a || d.accTouched)) (S.last || (S.last = {}))[d.type] = a || 'none'; // 다음 입력 때 기본값으로 쓴다
       if (d.date <= today()) applied = tr ? 'transfer' : a;
       if (d.subId) rec.subId = d.subId;
+      if (d.smsId) rec.smsId = d.smsId;
       const i = S.tx.findIndex(x => x.id === rec.id);
       if (i >= 0) S.tx[i] = rec; else S.tx.push(rec);
       if (!ui.search) ui.date = rec.date;
@@ -951,6 +1005,12 @@ const ACT = {
       // 입력한 금액은 '지금 잔액'이므로, 이미 반영된 가계부 내역만큼을 뺀 값을 기준 금액으로 저장한다
       const linked = d.id ? (eff()[d.id] || [0])[0] : 0;
       const rec = { id: d.id || uid(), side: d.side, name: d.name.trim(), kind: d.accKind, amount: d.amount - (d.side === 'asset' ? 1 : -1) * linked };
+      if (d.planOn && d.side === 'asset' && d.accKind === '예금·적금') {
+        const amount = num(d.planAmount), left = num(d.planMonths), done = d.planCount || 0;
+        if (!amount || !(done + left) || !d.planNext) return toast('적금의 월 납입액·납입일·남은 횟수를 입력해 주세요');
+        rec.plan = { amount, months: done + left, count: done, rate: parseFloat(d.planRate) || 0, next: d.planNext, day: parse(d.planNext).getDate(),
+          from: d.planFrom !== rec.id && accOf(d.planFrom) ? d.planFrom : '' };
+      }
       const i = S.accounts.findIndex(x => x.id === rec.id);
       if (i >= 0) S.accounts[i] = rec; else S.accounts.push(rec);
     }
@@ -963,6 +1023,7 @@ const ACT = {
     if (!armed(btn, '한 번 더 누르면 삭제')) return;
     const key = { tx: 'tx', sub: 'subs', acc: 'accounts' }[draft.kind], id = draft.id;
     S[key] = S[key].filter(x => x.id !== id);
+    if (draft.kind === 'tx' && draft.smsId) S.smsSkip = [...(S.smsSkip || []), draft.smsId].slice(-500); // 지운 문자 내역이 다시 등록되지 않게
     if (draft.kind === 'acc') { // 지운 항목을 가리키던 연결을 푼다
       for (const t of S.tx) { if (t.acc === id) delete t.acc; if (t.to === id) delete t.to; }
       for (const s of S.subs) if (s.acc === id) delete s.acc;
@@ -1005,7 +1066,7 @@ document.getElementById('file').addEventListener('change', async e => {
     const d = JSON.parse(await f.text());
     if (!d || !Array.isArray(d.tx) || !Array.isArray(d.subs)) throw 0;
     if (!confirm(`백업(내역 ${d.tx.length}건, 구독 ${d.subs.length}개)으로 현재 데이터를 교체할까요?`)) return;
-    S = { tx: d.tx, subs: d.subs, accounts: Array.isArray(d.accounts) ? d.accounts : [], budget: Number(d.budget) || 0, last: d.last && typeof d.last === 'object' ? d.last : {} };
+    S = { tx: d.tx, subs: d.subs, accounts: Array.isArray(d.accounts) ? d.accounts : [], budget: Number(d.budget) || 0, last: d.last && typeof d.last === 'object' ? d.last : {}, smsSkip: Array.isArray(d.smsSkip) ? d.smsSkip : [] };
     processSubs(); render(); toast('백업을 불러왔어요');
   } catch (err) { toast('가계부 백업 파일이 아니에요'); }
 });
@@ -1017,6 +1078,42 @@ document.addEventListener('visibilitychange', () => {
 
 processSubs();
 render();
+
+/* ---------- 안드로이드 앱(APK)이 부르는 함수 ---------- */
+// 새로 온 문자 목록 [{id, from, body, date(ms)}]을 받아 결제 문자만 가계부에 넣는다.
+window.nativeSms = (list, manual) => {
+  const seen = new Set([...S.tx.map(t => t.smsId), ...(S.smsSkip || [])].filter(Boolean));
+  let added = 0, last = 0;
+  for (const m of list || []) {
+    if (m.date > last) last = m.date;
+    if (seen.has(m.id) || !isPaySms(m.body)) continue;
+    if (/^(82|0)1[016789]/.test(String(m.from || '').replace(/\D/g, ''))) continue; // 개인 휴대폰에서 온 문자는 제외
+    const p = parseSms(m.body);
+    if (!p) continue;
+    const rec = { id: uid(), type: p.type, amount: p.amount, category: p.category, date: ymd(new Date(m.date)), memo: p.memo, smsId: m.id };
+    if (p.acc) rec.acc = p.acc;
+    S.tx.push(rec); seen.add(m.id); added++;
+  }
+  if (added) { save(); if (!draft) render(); toast(`결제 문자 ${added}건을 자동으로 등록했어요`); }
+  else if (manual) toast('새로 등록할 결제 문자가 없어요');
+  if (last) Native.ack(String(last)); // 다음에는 이 뒤에 온 문자부터 읽는다
+};
+// 다른 앱에서 "공유 → 가계부"로 넘어온 글
+window.nativeShare = text => {
+  if (draft) closeSheet();
+  ui.tab = 'home'; ui.search = false; render();
+  const r = parseSms(text);
+  if (r) { newTx(r); toast('문자 내용을 채웠어요. 확인하고 저장하세요'); }
+  else { newTx({ smsOpen: true, sms: text }); toast('문자에서 금액을 찾지 못했어요'); }
+};
+// 뒤로 가기 버튼. 처리했으면 true, 더 닫을 것이 없으면 false(앱 종료)
+window.nativeBack = () => {
+  if (draft) { closeSheet(); return true; }
+  if (ui.search) { ACT.searchClose(); return true; }
+  if (ui.tab !== 'home') { ACT.tab('home'); return true; }
+  return false;
+};
+window.nativePerm = () => { if (!draft && ui.tab === 'set') render(); }; // 문자 권한이 바뀌었을 때
 
 // 문자 앱에서 "공유 → 가계부"로 넘어온 결제 문자 처리
 (() => {
