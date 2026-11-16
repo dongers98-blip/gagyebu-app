@@ -212,11 +212,13 @@ textarea.in{min-height:96px;resize:vertical;font-size:14px}
 /* ---------- 데이터 ---------- */
 const KEY = 'gagyebu.v1';
 const NATIVE = !!window.Native; // 안드로이드 앱(APK) 안에서 실행 중인지. 웹에서는 false
-const CATS = {
+const DEF_CATS = {
   expense: [['식비','🍚'],['카페·간식','☕'],['교통','🚌'],['쇼핑','🛍️'],['생활','🧺'],['주거·통신','🏠'],
             ['의료·건강','💊'],['문화·여가','🎬'],['교육','📚'],['구독','🔁'],['경조사','🎁'],['투자','📈'],['기타','📌']],
   income:  [['급여','💼'],['용돈','💝'],['부수입','🪙'],['금융수입','🏦'],['투자수익','📈'],['기타','📌']]
 };
+// 카테고리는 설정에서 고칠 수 있다(S.cats). 고친 적이 없으면 기본 목록을 쓴다.
+const CATS = { get expense() { return (S.cats || DEF_CATS).expense; }, get income() { return (S.cats || DEF_CATS).income; } };
 const ACC_KINDS = {
   asset: [['현금','💵'],['예금·적금','🏦'],['투자','📈'],['부동산·보증금','🏠'],['받을 돈','🤝'],['기타','📦']],
   liab:  [['카드값','💳'],['대출','🏛️'],['빌린 돈','🤝'],['기타','📦']]
@@ -354,7 +356,7 @@ function processSubs() {
     let guard = 0;
     while (sub.nextDate <= t && guard++ < 800) {
       if (sub.autoLog) {
-        const rec = { id: uid(), type: 'expense', amount: sub.amount, category: '구독', memo: sub.name, date: sub.nextDate, subId: sub.id };
+        const rec = { id: uid(), type: sub.rtype || 'expense', amount: sub.amount, category: sub.category || '구독', memo: sub.name, date: sub.nextDate, subId: sub.id };
         if (accOf(sub.acc)) rec.acc = sub.acc; // 결제 수단이 연결돼 있으면 잔액에도 반영
         S.tx.push(rec);
         added++;
@@ -364,6 +366,7 @@ function processSubs() {
   }
   // 적금: 납입일이 지난 회차를 '이체'로 기록해 적금 잔액을 늘리고, 나가는 통장 잔액을 줄인다.
   let paid = 0;
+  const matured = [];
   for (const a of S.accounts) {
     const p = a.plan; if (!p) continue;
     let guard = 0;
@@ -373,8 +376,15 @@ function processSubs() {
       S.tx.push(rec); p.count++; paid++;
       const step = { cycle: 'monthly', nextDate: p.next, anchorDay: p.day }; advance(step); p.next = step.nextDate;
     }
+    // 만기(마지막 납입 한 달 뒤): 세후 이자를 금융수입으로 기록해 적금 잔액에 더한다. 한 번만 한다.
+    if (p.count >= p.months && !p.done && p.next <= t) {
+      const net = Math.round(planInfo(p.amount, p.months, p.rate).net);
+      if (net > 0) S.tx.push({ id: uid(), type: 'income', amount: net, category: '금융수입', memo: `${a.name} 만기 이자`, date: p.next, acc: a.id });
+      p.done = true; matured.push(`${a.name} 만기: 세후 이자 ${won(net)}을 더했어요`);
+    }
   }
   if (added || paid) toast([added ? `구독 결제 ${added}건` : '', paid ? `적금 납입 ${paid}건` : ''].filter(Boolean).join(', ') + '을 가계부에 기록했어요');
+  if (matured.length) toast(matured.join(' · '));
   save();
 }
 // 적금 만기 예상: 매달 같은 금액을 넣는 단리 적금 기준. 이자 소득세 15.4%를 뺀 금액도 함께 낸다.
@@ -390,7 +400,7 @@ function statItems(ym) {
   const items = monthTx(ym).filter(t => !(t.subId && yearly.has(t.subId)));
   for (const s of S.subs)
     if (s.cycle === 'yearly' && s.active && (s.startDate || '').slice(0, 7) <= ym)
-      items.push({ type: 'expense', category: '구독', amount: s.amount / 12, amort: true });
+      items.push({ type: s.rtype || 'expense', category: s.category || '구독', amount: s.amount / 12, amort: true });
   return items;
 }
 
@@ -444,12 +454,12 @@ function smsAcc(text) {
 const isPaySms = t => /승인|결제|출금|입금|이체|사용/.test(t) && !/광고|수신거부|인증번호|인증 번호|쿠폰|이벤트|혜택|상담|예정|청구|명세서/.test(t);
 
 /* ---------- 화면 상태 ---------- */
-const ui = { tab: 'home', mode: 'month', date: today(), search: false, q: '', qcat: '', statMonth: today().slice(0, 7), statType: 'expense', year: new Date().getFullYear(), subUnit: 'month', subFilter: 'all' };
+const ui = { tab: 'home', mode: 'month', date: today(), search: false, q: '', qcat: '', statMonth: today().slice(0, 7), statType: 'expense', year: new Date().getFullYear(), statView: 'month', catType: 'expense', subUnit: 'month', subFilter: 'all' };
 let draft = null;
-const TABS = [['home', '🏠', '홈'], ['stat', '📊', '통계'], ['year', '📒', '결산'], ['subs', '🔁', '구독'], ['bs', '🏦', '자산'], ['set', '⚙️', '설정']];
+const TABS = [['home', '🏠', '홈'], ['stat', '📊', '통계'], ['subs', '🔁', '고정'], ['bs', '🏦', '자산'], ['set', '⚙️', '설정']];
 
 function render() {
-  const titles = { home: '가계부', stat: '통계', year: '연간 결산', subs: '구독 관리', bs: '대차대조표', set: '설정' };
+  const titles = { home: '가계부', stat: '통계', subs: '고정 수입·지출', bs: '대차대조표', set: '설정' };
   const right = ui.tab === 'home' && !ui.search
     ? `<div class="r"><button class="chip" data-act="today">오늘</button><button class="icon-btn" data-act="search" aria-label="검색">🔍</button></div>`
     : ui.tab === 'bs' && S.accounts.length ? `<div class="r"><button class="chip" data-act="transfer">⇄ 이체</button></div>` : '';
@@ -457,7 +467,7 @@ function render() {
   document.getElementById('nav').innerHTML = TABS.map(([k, ic, nm]) =>
     `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? 'on' : ''}"><span class="ic">${ic}</span>${nm}</button>`).join('');
   document.getElementById('fab').style.display = (ui.tab === 'set' || ui.tab === 'stat' || ui.tab === 'year') ? 'none' : '';
-  document.getElementById('view').innerHTML = ({ home: viewHome, stat: viewStat, year: viewYear, subs: viewSubs, bs: viewBs, set: viewSet })[ui.tab]();
+  document.getElementById('view').innerHTML = ({ home: viewHome, stat: viewStat, subs: viewSubs, bs: viewBs, set: viewSet })[ui.tab]();
   if (ui.tab === 'home' && ui.search) renderResults();
 }
 
@@ -467,7 +477,7 @@ const navHtml = (prev, next, label) => `<div class="monthnav"><button class="ico
 function txItem(t, withDate) {
   const tr = t.type === 'transfer', an = accName(t.acc);
   const sub = tr ? `${esc(an || '등록 안 한 곳')} → ${esc(accName(t.to) || '등록 안 한 곳')}`
-    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.smsId ? ' · 문자 자동 등록' : ''}`;
+    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.smsId ? ' · 문자 자동 등록' : ''}${t.dup ? ' · ⚠ 중복 의심' : ''}`;
   return `<li><button class="item" data-act="editTx" data-v="${t.id}">
     <span class="em">${tr ? '🔄' : emojiOf(t.type, t.category)}</span>
     <span class="mid"><b>${esc(t.memo || t.category)}</b><span>${withDate ? fmtDay(t.date) + ' · ' : ''}${sub}</span></span>
@@ -550,7 +560,18 @@ function renderResults() {
 }
 
 /* ---------- 통계 ---------- */
+// 통계 탭: 월별 통계와 연간 결산을 한 탭에서 오간다
 function viewStat() {
+  return segHtml('statView', ui.statView, [['month', '월별'], ['year', '연간 결산']]) + (ui.statView === 'year' ? viewYear() : viewStatMonth());
+}
+// 카테고리별 예산이 있으면 남은 금액을 보여 준다
+function budLine(type, c, a) {
+  const b = type === 'expense' && (S.cbud || {})[c];
+  if (!b) return '';
+  const left = b - a;
+  return `<span class="cmp num">예산 ${won(b)} · ${left >= 0 ? `${won(left)} 남음` : `<b class="exp">${won(-left)} 초과</b>`}</span>`;
+}
+function viewStatMonth() {
   const ym = ui.statMonth, [y, m] = ym.split('-').map(Number), type = ui.statType;
   const items = statItems(ym), total = sum(items, type);
   const cats = {};
@@ -567,7 +588,7 @@ function viewStat() {
         <text x="60" y="72" text-anchor="middle">${short(total)}</text></svg>
       <div class="legend">${rows.slice(0, 7).map(([c, a], i) => `<div><s style="background:${PALETTE[i % PALETTE.length]}"></s><span>${esc(c)}</span><b class="num">${Math.round(a / total * 100)}%</b></div>`).join('')}${rows.length > 7 ? `<div class="muted">외 ${rows.length - 7}개</div>` : ''}</div>
     </div>
-    ${rows.map(([c, a], i) => `<div class="catrow"><span>${emojiOf(type, c)} ${esc(c)}</span><span class="am num">${won(a)}</span><div class="bar"><i style="width:${a / rows[0][1] * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></div></div>`).join('')}`
+    ${rows.map(([c, a], i) => `<div class="catrow"><span>${emojiOf(type, c)} ${esc(c)}</span><span class="am num">${won(a)}</span><div class="bar"><i style="width:${a / rows[0][1] * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></div>${budLine(type, c, a)}</div>`).join('')}`
     : `<div class="empty">이 달 ${type === 'expense' ? '지출' : '수입'} 내역이 없어요</div>`;
 
   const months = [];
@@ -726,13 +747,14 @@ function subItem(s) {
   const d = dday(s.nextDate), nd = parse(s.nextDate), u = ui.subUnit;
   const dd = !s.active ? '<span class="badge off">일시정지</span>' : `<span class="badge ${d <= 3 ? 'soon' : ''}">${d === 0 ? '오늘' : 'D-' + d}</span>`;
   return `<li><button class="item ${s.active ? '' : 'paused'}" data-act="editSub" data-v="${s.id}">
-    <span class="em">🔁</span>
+    <span class="em">${emojiOf(s.rtype || 'expense', s.category || '구독')}</span>
     <span class="mid"><b>${esc(s.name)}${dd}</b><span>${CYC[s.cycle]} · 다음 결제 ${nd.getMonth() + 1}월 ${nd.getDate()}일${s.memo ? ' · ' + esc(s.memo) : ''}</span></span>
-    <span class="amt num">${won(s.amount)}<small>${UNITS[u][1]} ${won(conv(s, u))}</small></span>
+    <span class="amt num ${s.rtype === 'income' ? 'inc' : ''}">${s.rtype === 'income' ? '+' : ''}${won(s.amount)}<small>${UNITS[u][1]} ${won(conv(s, u))}</small></span>
   </button></li>`;
 }
 function viewSubs() {
-  const act = S.subs.filter(s => s.active), u = ui.subUnit;
+  const act = S.subs.filter(s => s.active && s.rtype !== 'income'), u = ui.subUnit;
+  const fixedInc = S.subs.filter(s => s.active && s.rtype === 'income').reduce((a, s) => a + conv(s, u), 0);
   const total = act.reduce((a, s) => a + conv(s, u), 0);
   const cnt = k => S.subs.filter(s => s.cycle === k).length;
   const list = S.subs.filter(s => ui.subFilter === 'all' || s.cycle === ui.subFilter)
@@ -740,7 +762,7 @@ function viewSubs() {
   const byCycle = Object.keys(CYC).map(k => [k, act.filter(s => s.cycle === k).reduce((a, s) => a + conv(s, u), 0)]).filter(x => x[1] > 0);
   return `
   <section class="card">
-    <h2>구독 ${act.length}개 · ${UNITS[u][1]} 기준</h2>
+    <h2>고정 지출·구독 ${act.length}개 · ${UNITS[u][1]} 기준${fixedInc ? ` <span class="inc num">고정 수입 +${won(fixedInc)}</span>` : ''}</h2>
     ${segHtml('subUnit', u, Object.entries(UNITS).map(([k, v]) => [k, v[0]]))}
     <div class="big num">${won(total)}<span style="font-size:14px;font-weight:600;color:var(--sub)"> / ${UNITS[u][0]}</span></div>
     ${byCycle.length ? `<div class="bar" style="margin-top:14px">${byCycle.map(([k, v], i) => `<i style="width:${v / total * 100}%;background:${PALETTE[i]};border-radius:0"></i>`).join('')}</div>
@@ -761,7 +783,7 @@ function viewBs() {
   const rows = (arr, side) => arr.length ? `<ul class="list">${[...arr].sort((a, b) => bal(b) - bal(a)).map(a => {
       const n = (eff()[a.id] || [0, 0])[1], v = bal(a);
       return `<li><button class="item" data-act="editAcc" data-v="${a.id}">
-      <span class="em">${accEmoji(side, a.kind)}</span><span class="mid"><b>${esc(a.name)}</b><span>${esc(a.kind)}${a.plan ? ` · 적금 ${a.plan.count}/${a.plan.months}회` : n ? ` · 내역 ${n}건 반영` : ''}</span></span><span class="amt num ${v < 0 ? 'exp' : ''}">${won(v)}</span></button></li>`; }).join('')}</ul>`
+      <span class="em">${accEmoji(side, a.kind)}</span><span class="mid"><b>${esc(a.name)}</b><span>${esc(a.kind)}${a.plan ? ` · 적금 ${a.plan.count}/${a.plan.months}회${a.plan.done ? ' · 만기' : ''}` : n ? ` · 내역 ${n}건 반영` : ''}</span></span><span class="amt num ${v < 0 ? 'exp' : ''}">${won(v)}</span></button></li>`; }).join('')}</ul>`
     : `<div class="empty" style="padding:12px 0">${side === 'asset' ? '통장, 현금, 투자금 등을 추가해 보세요' : '카드값, 대출 등을 추가해 보세요'}</div>`;
   return `
   <section class="card">
@@ -776,7 +798,7 @@ function viewBs() {
   <section class="card"><h2>자본</h2>
     <div class="setrow" style="padding-top:0"><span>순자산<small>자산 총계 − 부채 총계</small></span><b class="num">${won(eq)}</b></div>
     <div class="setrow"><span>이번 달 손익<small>가계부의 수입 − 지출</small></span>${signed(pl)}</div>
-    <button class="setrow" data-act="tab" data-v="year"><span>올해 손익<small>눌러서 연간 결산 보기 ›</small></span>${signed(ypl)}</button>
+    <button class="setrow" data-act="goyear"><span>올해 손익<small>눌러서 연간 결산 보기 ›</small></span>${signed(ypl)}</button>
     <div class="total"><span>부채·자본 총계</span><span class="num">${won(tl + eq)}</span></div>
   </section>
   <p class="note" style="text-align:center;padding:0 12px">가계부에 내역을 저장하면 선택된 통장·카드 잔액에 바로 반영돼요 (오늘 날짜까지의 내역). 실제 잔액과 다르면 항목을 눌러 고쳐 주세요. 통장에서 카드값을 낸 날은 ‘이체’로 기록하면 양쪽이 함께 줄어요.</p>`;
@@ -790,6 +812,17 @@ function viewSet() {
     <div class="won"><input class="in amtin amt" id="budget" inputmode="numeric" placeholder="0" value="${S.budget ? S.budget.toLocaleString('ko-KR') : ''}"></div>
     <button class="btn block" data-act="saveBudget">예산 저장</button>
   </section>
+  <section class="card">
+    <h2>카테고리 <button data-act="addCat">+ 추가</button></h2>
+    ${segHtml('catType', ui.catType, [['expense', '지출'], ['income', '수입']])}
+    <div class="chips">${CATS[ui.catType].map(([c, e]) => `<button class="chip" data-act="editCat" data-v="${esc(c)}">${esc(e)} ${esc(c)}${ui.catType === 'expense' && (S.cbud || {})[c] ? ` · 예산 ${man(S.cbud[c])}` : ''}</button>`).join('')}</div>
+    <p class="note">눌러서 이름·아이콘${ui.catType === 'expense' ? '·월 예산' : ''}을 고칠 수 있어요. 예산을 넣은 카테고리는 통계에서 남은 금액이 보여요.</p>
+  </section>
+  ${NATIVE ? (on => `<section class="card">
+    <h2>앱 잠금 <span class="${on ? 'inc' : ''}">${on ? '켜짐' : '꺼짐'}</span></h2>
+    <p class="note" style="margin:0">앱을 열 때 지문이나 휴대폰 잠금(PIN·패턴)을 확인해요. 켜 두면 화면 캡처와 최근 앱 미리보기도 막혀요.</p>
+    <button class="btn block" data-act="lockToggle">${on ? '잠금 끄기' : '잠금 켜기'}</button>
+  </section>`)(Native.isLockOn()) : ''}
   <section class="card">
     <h2>데이터</h2>
     <button class="setrow" data-act="exportJson"><span>백업 파일 내보내기<small>내역·구독·자산을 파일로 저장</small></span><span class="go">›</span></button>
@@ -852,14 +885,24 @@ function renderSheet() {
       ${tr ? `${accPick('보내는 곳', 'acc', d.acc, '등록 안 한 곳')}${S.accounts.length ? accPick('받는 곳', 'accTo', d.to, '등록 안 한 곳') : ''}
       <p class="note">통장에서 카드값을 내거나 저축 통장으로 옮길 때 써요. 수입·지출 통계에는 들어가지 않아요.</p>`
       : `<label class="f">카테고리</label>
-      <div class="chips">${CATS[d.type].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${c}">${e} ${c}</button>`).join('')}</div>
+      <div class="chips">${CATS[d.type].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
       ${accPick(d.type === 'expense' ? '결제 수단 · 자산 탭 잔액에 반영' : '입금 계좌 · 자산 탭 잔액에 반영', 'acc', d.acc)}`}
       <label class="f">날짜</label><input class="in" type="date" data-f="date" value="${d.date}">
       <label class="f">메모</label><input class="in" data-f="memo" maxlength="40" placeholder="예: 점심 김치찌개" value="${esc(d.memo)}">
       ${foot}`;
+  } else if (d.kind === 'cat') {
+    el.innerHTML = `<div class="grab"></div><h3>${d.id ? '카테고리 수정' : '카테고리 추가'}</h3>
+      <label class="f" style="margin-top:0">이름</label><input class="in" data-f="name" maxlength="12" placeholder="예: 반려동물" value="${esc(d.name)}" ${d.id === '구독' ? 'disabled' : ''}>
+      <label class="f">아이콘 (이모지 한 개)</label><input class="in" data-f="emoji" maxlength="4" value="${esc(d.emoji)}">
+      ${d.ctype === 'expense' ? `<label class="f">월 예산 (없으면 비워 두세요)</label><div class="won"><input class="in amt" data-f="cbud" inputmode="numeric" placeholder="0" value="${num(d.cbud) ? num(d.cbud).toLocaleString('ko-KR') : ''}"></div>` : ''}
+      ${foot}`;
   } else if (d.kind === 'sub') {
-    el.innerHTML = `<div class="grab"></div><h3>${d.id ? '구독 수정' : '구독 추가'}</h3>
-      <label class="f" style="margin-top:0">서비스 이름</label><input class="in" data-f="name" maxlength="30" placeholder="예: 음악 스트리밍" value="${esc(d.name)}">
+    const rt = d.rtype || 'expense';
+    el.innerHTML = `<div class="grab"></div><h3>${d.id ? '고정 항목 수정' : '고정 항목 추가'}</h3>
+      ${segHtml('rtype', rt, [['expense', '지출 (구독·월세·보험 등)'], ['income', '수입 (월급 등)']])}
+      <label class="f" style="margin-top:0">카테고리</label>
+      <div class="chips">${CATS[rt].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
+      <label class="f">이름</label><input class="in" data-f="name" maxlength="30" placeholder="예: 음악 스트리밍" value="${esc(d.name)}">
       <label class="f">결제 주기</label>
       <div style="margin-bottom:-14px">${segHtml('cycle', d.cycle, Object.entries(CYC))}</div>
       ${amt('1회 결제 금액')}
@@ -921,7 +964,7 @@ const ACT = {
   yprev() { if (ui.year > 2000) { ui.year--; render(); } },
   ynext() { if (ui.year < new Date().getFullYear()) { ui.year++; render(); } },
   year(v) { ui.year = +v; window.scrollTo(0, 0); render(); },
-  gostat(v) { ui.statMonth = v; ui.statType = 'expense'; ui.tab = 'stat'; window.scrollTo(0, 0); render(); },
+  gostat(v) { ui.statView = 'month'; ui.statMonth = v; ui.statType = 'expense'; ui.tab = 'stat'; window.scrollTo(0, 0); render(); },
   transfer() { newTx({ type: 'transfer', category: '이체', acc: '' }); },
   smsPerm() { Native.requestSms(); },
   smsImport() { toast('문자함을 확인하고 있어요'); Native.importSms(30); },
@@ -930,16 +973,27 @@ const ACT = {
   subUnit(v) { ui.subUnit = v; render(); },
   subFilter(v) { ui.subFilter = v; render(); },
   add() {
-    if (ui.tab === 'subs') { draft = { kind: 'sub', id: null, name: '', amount: 0, cycle: 'monthly', nextDate: today(), memo: '', autoLog: true, active: true, acc: lastAcc('expense') }; openSheet(); }
+    if (ui.tab === 'subs') { draft = { kind: 'sub', id: null, name: '', amount: 0, cycle: 'monthly', nextDate: today(), memo: '', autoLog: true, active: true, acc: lastAcc('expense'), rtype: 'expense', category: '구독' }; openSheet(); }
     else if (ui.tab === 'bs') ACT.addAcc('asset');
     else newTx();
   },
   addAcc(v) { draft = { kind: 'acc', id: null, side: v, name: '', accKind: ACC_KINDS[v][0][0], amount: 0 }; openSheet(); },
   editTx(v) { const t = S.tx.find(x => x.id === v); if (t) { draft = { ...t, kind: 'tx' }; openSheet(); } },
-  editSub(v) { const s = S.subs.find(x => x.id === v); if (s) { draft = { ...s, kind: 'sub' }; openSheet(); } },
+  editSub(v) { const s = S.subs.find(x => x.id === v); if (s) { draft = { rtype: 'expense', category: '구독', ...s, kind: 'sub' }; openSheet(); } },
+  rtype(v) { syncDraft(); draft.rtype = v; draft.category = v === 'expense' ? '구독' : CATS.income[0][0]; draft.acc = lastAcc(v); renderSheet(); },
+  statView(v) { ui.statView = v; render(); },
+  goyear() { ui.tab = 'stat'; ui.statView = 'year'; ui.year = new Date().getFullYear(); window.scrollTo(0, 0); render(); },
+  catType(v) { ui.catType = v; render(); },
+  addCat() { draft = { kind: 'cat', id: null, ctype: ui.catType, name: '', emoji: '📌', cbud: '' }; openSheet(); },
+  editCat(v) { const c = CATS[ui.catType].find(x => x[0] === v); if (c) { draft = { kind: 'cat', id: v, ctype: ui.catType, name: v, emoji: c[1], cbud: (S.cbud || {})[v] || '' }; openSheet(); } },
+  lockToggle() {
+    const on = !Native.isLockOn();
+    if (!Native.setLock(on)) return toast('휴대폰에 화면 잠금(PIN·패턴·지문)을 먼저 설정해 주세요');
+    render(); toast(on ? '앱 잠금을 켰어요' : '앱 잠금을 껐어요');
+  },
   editAcc(v) { const a = S.accounts.find(x => x.id === v); if (a) {
     const p = a.plan;
-    draft = { ...a, accKind: a.kind, kind: 'acc', amount: bal(a), planOn: !!p, planAmount: p ? p.amount : '', planNext: p ? p.next : '', planRate: p ? String(p.rate) : '', planMonths: p ? p.months - p.count : '', planFrom: p ? p.from : '', planCount: p ? p.count : 0 };
+    draft = { ...a, accKind: a.kind, kind: 'acc', amount: bal(a), planOn: !!p, planAmount: p ? p.amount : '', planNext: p ? p.next : '', planRate: p ? String(p.rate) : '', planMonths: p ? p.months - p.count : '', planFrom: p ? p.from : '', planCount: p ? p.count : 0, planDone: !!(p && p.done) };
     openSheet();
   } },
   planToggle() { syncDraft(); renderSheet(); },
@@ -975,6 +1029,21 @@ const ACT = {
     syncDraft();
     const d = draft;
     let applied = ''; // 이번 저장이 잔액에 반영된 통장·카드 (저장 후 안내용)
+    if (d.kind === 'cat') {
+      const name = (d.name || '').trim(), emoji = (d.emoji || '').trim() || '📌', list = CATS[d.ctype].map(c => [...c]);
+      if (!name) return toast('이름을 입력해 주세요');
+      if (list.some(c => c[0] === name && c[0] !== d.id)) return toast('같은 이름의 카테고리가 있어요');
+      if (d.id) { const c = list.find(x => x[0] === d.id); c[0] = name; c[1] = emoji; } else list.push([name, emoji]);
+      S.cats = { expense: CATS.expense, income: CATS.income, [d.ctype]: list };
+      if (d.id && d.id !== name) { // 이름을 바꾸면 이미 적은 내역·고정 항목도 따라 바꾼다
+        for (const t of S.tx) if (t.type === d.ctype && t.category === d.id) t.category = name;
+        for (const s of S.subs) if ((s.rtype || 'expense') === d.ctype && s.category === d.id) s.category = name;
+        if (S.cbud) delete S.cbud[d.id];
+      }
+      if (d.ctype === 'expense') { S.cbud = S.cbud || {}; if (num(d.cbud)) S.cbud[name] = num(d.cbud); else delete S.cbud[name]; }
+      closeSheet(); save(); render();
+      return toast('카테고리를 저장했어요');
+    }
     if (d.kind === 'tx') {
       if (!d.amount) return toast('금액을 입력해 주세요');
       if (!d.date) return toast('날짜를 선택해 주세요');
@@ -995,7 +1064,7 @@ const ACT = {
       if (!d.name.trim()) return toast('서비스 이름을 입력해 주세요');
       if (!d.amount) return toast('금액을 입력해 주세요');
       if (!d.nextDate) return toast('다음 결제일을 선택해 주세요');
-      const rec = { id: d.id || uid(), name: d.name.trim(), amount: d.amount, cycle: d.cycle, nextDate: d.nextDate,
+      const rec = { id: d.id || uid(), name: d.name.trim(), amount: d.amount, cycle: d.cycle, rtype: d.rtype || 'expense', category: d.category || '구독', nextDate: d.nextDate,
         anchorDay: parse(d.nextDate).getDate(), startDate: d.startDate || today(), memo: d.memo.trim(), autoLog: !!d.autoLog, active: d.id ? !!d.active : true };
       if (accOf(d.acc)) rec.acc = d.acc;
       const i = S.subs.findIndex(x => x.id === rec.id);
@@ -1008,7 +1077,7 @@ const ACT = {
       if (d.planOn && d.side === 'asset' && d.accKind === '예금·적금') {
         const amount = num(d.planAmount), left = num(d.planMonths), done = d.planCount || 0;
         if (!amount || !(done + left) || !d.planNext) return toast('적금의 월 납입액·납입일·남은 횟수를 입력해 주세요');
-        rec.plan = { amount, months: done + left, count: done, rate: parseFloat(d.planRate) || 0, next: d.planNext, day: parse(d.planNext).getDate(),
+        rec.plan = { amount, months: done + left, count: done, done: !!d.planDone && !left, rate: parseFloat(d.planRate) || 0, next: d.planNext, day: parse(d.planNext).getDate(),
           from: d.planFrom !== rec.id && accOf(d.planFrom) ? d.planFrom : '' };
       }
       const i = S.accounts.findIndex(x => x.id === rec.id);
@@ -1021,6 +1090,15 @@ const ACT = {
   },
   del(v, btn) {
     if (!armed(btn, '한 번 더 누르면 삭제')) return;
+    if (draft.kind === 'cat') { // 지워도 이미 적은 내역의 카테고리 이름은 그대로 남는다
+      if (draft.id === '구독') return toast('구독 카테고리는 지울 수 없어요');
+      const rest = CATS[draft.ctype].filter(c => c[0] !== draft.id);
+      if (!rest.length) return toast('카테고리는 하나 이상 있어야 해요');
+      S.cats = { expense: CATS.expense, income: CATS.income, [draft.ctype]: rest };
+      if (S.cbud) delete S.cbud[draft.id];
+      save(); closeSheet(); render();
+      return toast('삭제했어요');
+    }
     const key = { tx: 'tx', sub: 'subs', acc: 'accounts' }[draft.kind], id = draft.id;
     S[key] = S[key].filter(x => x.id !== id);
     if (draft.kind === 'tx' && draft.smsId) S.smsSkip = [...(S.smsSkip || []), draft.smsId].slice(-500); // 지운 문자 내역이 다시 등록되지 않게
@@ -1066,7 +1144,7 @@ document.getElementById('file').addEventListener('change', async e => {
     const d = JSON.parse(await f.text());
     if (!d || !Array.isArray(d.tx) || !Array.isArray(d.subs)) throw 0;
     if (!confirm(`백업(내역 ${d.tx.length}건, 구독 ${d.subs.length}개)으로 현재 데이터를 교체할까요?`)) return;
-    S = { tx: d.tx, subs: d.subs, accounts: Array.isArray(d.accounts) ? d.accounts : [], budget: Number(d.budget) || 0, last: d.last && typeof d.last === 'object' ? d.last : {}, smsSkip: Array.isArray(d.smsSkip) ? d.smsSkip : [] };
+    S = { ...d, tx: d.tx, subs: d.subs, accounts: Array.isArray(d.accounts) ? d.accounts : [], budget: Number(d.budget) || 0, last: d.last && typeof d.last === 'object' ? d.last : {}, smsSkip: Array.isArray(d.smsSkip) ? d.smsSkip : [] };
     processSubs(); render(); toast('백업을 불러왔어요');
   } catch (err) { toast('가계부 백업 파일이 아니에요'); }
 });
@@ -1083,7 +1161,7 @@ render();
 // 새로 온 문자 목록 [{id, from, body, date(ms)}]을 받아 결제 문자만 가계부에 넣는다.
 window.nativeSms = (list, manual) => {
   const seen = new Set([...S.tx.map(t => t.smsId), ...(S.smsSkip || [])].filter(Boolean));
-  let added = 0, last = 0;
+  let added = 0, last = 0, dups = 0;
   for (const m of list || []) {
     if (m.date > last) last = m.date;
     if (seen.has(m.id) || !isPaySms(m.body)) continue;
@@ -1092,9 +1170,11 @@ window.nativeSms = (list, manual) => {
     if (!p) continue;
     const rec = { id: uid(), type: p.type, amount: p.amount, category: p.category, date: ymd(new Date(m.date)), memo: p.memo, smsId: m.id };
     if (p.acc) rec.acc = p.acc;
+    // 같은 날 같은 금액이 이미 있으면(카드 문자 + 쇼핑몰 문자 등) 지우지는 않고 표시만 해 둔다
+    if (S.tx.some(t => t.type === rec.type && t.amount === rec.amount && t.date === rec.date)) { rec.dup = true; dups++; }
     S.tx.push(rec); seen.add(m.id); added++;
   }
-  if (added) { save(); if (!draft) render(); toast(`결제 문자 ${added}건을 자동으로 등록했어요`); }
+  if (added) { save(); if (!draft) render(); toast(`결제 문자 ${added}건을 자동으로 등록했어요${dups ? ` (중복 의심 ${dups}건 표시)` : ''}`); }
   else if (manual) toast('새로 등록할 결제 문자가 없어요');
   if (last) Native.ack(String(last)); // 다음에는 이 뒤에 온 문자부터 읽는다
 };
