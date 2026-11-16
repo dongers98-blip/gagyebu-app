@@ -1,5 +1,5 @@
 // 오프라인에서도 열리도록 앱 파일을 캐시한다. 파일을 고치면 VERSION을 올린다.
-const VERSION = 'gagyebu-v1';
+const VERSION = 'gagyebu-v2';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg'];
 
 self.addEventListener('install', e => {
@@ -16,12 +16,16 @@ self.addEventListener('activate', e => {
 
 // 캐시를 먼저 보여 주고, 뒤에서 최신 파일을 받아 다음 실행 때 반영한다.
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  // 화면 이동 요청은 주소 뒤 ?text=... 를 떼고 처리한다.
+  // 공유받은 결제 문자가 서버로 전송되지 않게 하기 위해서다.
+  const req = e.request.mode === 'navigate' ? new Request(url.origin + url.pathname) : e.request;
   e.respondWith(
     caches.open(VERSION).then(async cache => {
-      const hit = await cache.match(e.request);
-      const fresh = fetch(e.request).then(res => {
-        if (res.ok) cache.put(e.request, res.clone());
+      const hit = await cache.match(req);
+      const fresh = fetch(req).then(res => {
+        if (res.ok) cache.put(req, res.clone());
         return res;
       }).catch(() => hit);
       return hit || fresh;
