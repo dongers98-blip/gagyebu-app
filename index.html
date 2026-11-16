@@ -395,9 +395,12 @@ function processSubs() {
     if (!sub.active) continue;
     let guard = 0;
     while (sub.nextDate <= t && guard++ < 800) {
+      if (sub.due && sub.nextDate > sub.due) { sub.active = false; break; } // 만기가 지난 적금은 더 넣지 않는다
       if (sub.autoLog) {
         const rec = { id: uid(), type: sub.rtype || 'expense', amount: sub.amount, category: sub.category || '구독', memo: sub.name, date: sub.nextDate, subId: sub.id };
         if (accOf(sub.acc)) rec.acc = sub.acc; // 결제 수단이 연결돼 있으면 잔액에도 반영
+        if (sub.rate) rec.rate = sub.rate;
+        if (sub.due) rec.due = sub.due;
         S.tx.push(rec);
         added++;
       }
@@ -425,6 +428,13 @@ function processSubs() {
   }
   if (added || paid) toast([added ? `구독 결제 ${added}건` : '', paid ? `적금 납입 ${paid}건` : ''].filter(Boolean).join(', ') + '을 가계부에 기록했어요');
   if (matured.length) toast(matured.join(' · '));
+  // 만기일이 된 적금·예금을 한 번 알려 준다
+  const seenDue = new Set(S.dueSeen || []);
+  const dueNow = [...new Set(S.tx.filter(x => x.type === 'saving' && x.due && x.due <= t).map(x => (x.memo || x.category) + '|' + x.due))].filter(k => !seenDue.has(k));
+  if (dueNow.length) {
+    S.dueSeen = [...seenDue, ...dueNow].slice(-200);
+    toast(`${dueNow.map(k => k.split('|')[0]).join(', ')} 만기일이 됐어요. 통계의 저축·투자에서 확인하세요`);
+  }
   save();
 }
 // 적금 만기 예상: 매달 같은 금액을 넣는 단리 적금 기준. 이자 소득세 15.4%를 뺀 금액도 함께 낸다.
@@ -517,7 +527,7 @@ const navHtml = (prev, next, label) => `<div class="monthnav"><button class="ico
 function txItem(t, withDate) {
   const tr = t.type === 'transfer', an = accName(t.acc);
   const sub = tr ? `${esc(an || '등록 안 한 곳')} → ${esc(accName(t.to) || '등록 안 한 곳')}`
-    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.cur ? ` · ${FX_SIGN[t.cur] || t.cur}${t.famt}` : ''}${t.smsId ? ' · 문자 자동 등록' : ''}${t.dup ? ' · ⚠ 중복 의심' : ''}`;
+    : `${esc(t.category)}${an ? ' · ' + esc(an) : ''}${t.subId ? ' · 구독 자동 기록' : ''}${t.cur ? ` · ${FX_SIGN[t.cur] || t.cur}${t.famt}` : ''}${t.due ? ` · ${t.rate ? `연 ${t.rate}% · ` : ''}만기 ${t.due}` : ''}${t.smsId ? ' · 문자 자동 등록' : ''}${t.dup ? ' · ⚠ 중복 의심' : ''}`;
   return `<li><button class="item" data-act="editTx" data-v="${t.id}">
     <span class="em">${tr ? '🔄' : emojiOf(t.type, t.category)}</span>
     <span class="mid"><b>${esc(t.memo || t.category)}</b><span>${withDate ? fmtDay(t.date) + ' · ' : ''}${sub}</span></span>
@@ -713,6 +723,7 @@ function viewStatMonth() {
 
   return `${navHtml('sprev', 'snext', `${y}년 ${m}월`)}
   ${segHtml('statType', type, [['income', '수입'], ['expense', '지출'], ['saving', '저축·투자']])}
+  ${type === 'saving' ? depositCard() : ''}
   <section class="card"><h2>카테고리별 비율</h2>${donut}</section>
   <section class="card">
     <h2>최근 6개월 <span class="key"><span><s style="background:var(--inc)"></s>수입</span><span><s style="background:var(--exp)"></s>지출</span></span></h2>
@@ -979,6 +990,46 @@ function accPick(label, act, cur, none) {
   const list = [...S.accounts].sort((a, b) => sgn(b) - sgn(a));
   return `<label class="f">${label}</label><div class="chips"><button class="chip ${accOf(cur) ? '' : 'on'}" data-act="${act}" data-v="">${none || '연결 안 함'}</button>${list.map(a => `<button class="chip ${cur === a.id ? 'on' : ''}" data-act="${act}" data-v="${a.id}">${accEmoji(a.side, a.kind)} ${esc(a.name)}</button>`).join('')}</div>`;
 }
+/* ---------- 적금·예금: 이자율과 만기일 ---------- */
+// 저축·투자 중 이름에 적금/예금이 들어간 카테고리에만 이자율·만기일 칸을 보여 준다.
+const isDeposit = (type, cat) => type === 'saving' && /적금|예금/.test(cat || '');
+// 넣은 날부터 만기일까지의 단리 이자(세전). 은행 실제 계산과 조금 다를 수 있다.
+const depInt = (amount, rate, from, due) => amount * (rate / 100) * Math.max(0, Math.round((parse(due) - parse(from)) / 864e5)) / 365;
+const TAX_KEEP = 1 - 0.154; // 이자소득세 15.4%를 뗀 뒤 남는 비율
+function depNote(d, dateKey) {
+  const a = d.amount, r = parseFloat(d.rate) || 0, from = d[dateKey];
+  if (!a || !r || !d.due || !from) return '이자율과 만기일을 넣으면 예상 이자를 계산해요.';
+  if (d.due <= from) return '만기일은 돈을 넣는 날보다 뒤여야 해요.';
+  const it = depInt(a, r, from, d.due);
+  return `이번에 넣는 ${won(a)}의 만기 예상 이자는 ${won(it)} (세후 약 ${won(it * TAX_KEEP)})이에요.`;
+}
+function depFields(d, type, dateKey) {
+  if (!isDeposit(type, d.category)) return '';
+  return `<label class="f">연 이자율 (%)</label><input class="in" data-f="rate" inputmode="decimal" placeholder="예: 3.5" value="${esc(d.rate || '')}">
+      <label class="f">만기일</label><input class="in" type="date" data-f="due" value="${esc(d.due || '')}">
+      <p class="note" id="depNote" data-key="${dateKey}">${depNote(d, dateKey)}</p>`;
+}
+// 적금·예금 현황: 같은 이름·만기·이자율끼리 묶어 원금과 만기 예상 이자를 보여 준다.
+function depositCard() {
+  const g = {};
+  for (const t of S.tx) {
+    if (t.type !== 'saving' || !t.due) continue;
+    const k = [t.category, t.memo || '', t.due, t.rate || 0].join('|');
+    const o = g[k] || (g[k] = { name: t.memo || t.category, cat: t.category, due: t.due, rate: t.rate || 0, sum: 0, int: 0, n: 0 });
+    o.sum += t.amount; o.n++; if (t.rate) o.int += depInt(t.amount, t.rate, t.date, t.due);
+  }
+  const rows = Object.values(g).sort((a, b) => a.due.localeCompare(b.due));
+  if (!rows.length) return `<section class="card"><h2>적금·예금 현황</h2><div class="empty" style="padding:10px 0">저축·투자에서 적금이나 예금을 고르고 이자율과 만기일을 넣으면 여기에 모여요</div></section>`;
+  const ts = rows.reduce((s, r) => s + r.sum, 0), ti = rows.reduce((s, r) => s + r.int, 0);
+  return `<section class="card"><h2>적금·예금 현황 <span>만기 예상</span></h2>
+    ${rows.map((r, i) => { const d = dday(r.due); return `<div class="setrow" ${i ? '' : 'style="padding-top:0"'}><span>${emojiOf('saving', r.cat)} ${esc(r.name)}<span class="badge ${d <= 30 && d >= 0 ? 'soon' : d < 0 ? 'off' : ''}">${d > 0 ? 'D-' + d : d === 0 ? '오늘 만기' : '만기 지남'}</span>
+      <small>${r.rate ? `연 ${r.rate}% · ` : ''}만기 ${r.due} · ${r.n}회 납입</small><small>원금 ${won(r.sum)} → 받을 돈 약 ${won(r.sum + r.int * TAX_KEEP)}</small></span>
+      <b class="num inc" style="text-align:right">+${won(r.int)}<small>세후 ${won(r.int * TAX_KEEP)}</small></b></div>`; }).join('')}
+    <div class="total"><span>원금 ${won(ts)}</span><span class="num inc">이자 +${won(ti)}</span></div>
+    <p class="note">넣은 날부터 만기일까지 단리로 계산한 값이에요. 세후는 이자소득세 15.4%를 뺀 금액이고, 실제 은행 지급액과 조금 다를 수 있어요.</p>
+  </section>`;
+}
+
 // 자산 항목(예금·적금)에 붙는 적금 조건 입력란
 function planFields(d) {
   if (d.side !== 'asset' || d.accKind !== '예금·적금') return '';
@@ -1010,6 +1061,7 @@ function renderSheet() {
       : `<label class="f">카테고리</label>
       <div class="chips">${CATS[d.type].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
       <p class="note" style="margin-top:6px">카테고리를 꾹 누르면 이름·아이콘을 고칠 수 있어요. 새로 만들기는 설정에서 해요.</p>
+      ${depFields(d, d.type, 'date')}
       ${accPick(d.type === 'expense' ? '결제 수단 · 자산 탭 잔액에 반영' : '입금 계좌 · 자산 탭 잔액에 반영', 'acc', d.acc)}`}
       <label class="f">날짜</label><input class="in" type="date" data-f="date" value="${d.date}">
       <label class="f">메모</label><input class="in" data-f="memo" maxlength="40" placeholder="예: 점심 김치찌개" value="${esc(d.memo)}">
@@ -1027,7 +1079,8 @@ function renderSheet() {
       <label class="f" style="margin-top:0">카테고리</label>
       <div class="chips">${CATS[rt].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
       <label class="f">이름</label><input class="in" data-f="name" maxlength="30" placeholder="예: 음악 스트리밍" value="${esc(d.name)}">
-      <label class="f">결제 주기</label>
+      ${depFields(d, rt, 'nextDate')}
+      <label class="f">${rt === 'expense' ? '결제' : rt === 'income' ? '받는' : '넣는'} 주기</label>
       <div style="margin-bottom:-14px">${segHtml('cycle', d.cycle, Object.entries(CYC))}</div>
       ${amt('1회 결제 금액')}
       <label class="f">다음 결제일</label><input class="in" type="date" data-f="nextDate" value="${d.nextDate}">
@@ -1203,6 +1256,11 @@ const ACT = {
       if (d.subId) rec.subId = d.subId;
       if (d.smsId) rec.smsId = d.smsId;
       if (foreign) { rec.cur = d.cur; rec.famt = d.famt; rec.rate = d.rate; }
+      else if (isDeposit(d.type, d.category)) { // 적금·예금의 이자율과 만기일
+        if (d.due && d.due <= d.date) return toast('만기일은 날짜보다 뒤여야 해요');
+        if (parseFloat(d.rate) > 0) rec.rate = parseFloat(d.rate);
+        if (d.due) rec.due = d.due;
+      }
       const i = S.tx.findIndex(x => x.id === rec.id);
       if (i >= 0) S.tx[i] = rec; else S.tx.push(rec);
       if (!ui.search) ui.date = rec.date;
@@ -1213,6 +1271,10 @@ const ACT = {
       const rec = { id: d.id || uid(), name: d.name.trim(), amount: d.amount, cycle: d.cycle, rtype: d.rtype || 'expense', category: d.category || '구독', nextDate: d.nextDate,
         anchorDay: parse(d.nextDate).getDate(), startDate: d.startDate || today(), memo: d.memo.trim(), autoLog: !!d.autoLog, active: d.id ? !!d.active : true };
       if (accOf(d.acc)) rec.acc = d.acc;
+      if (isDeposit(rec.rtype, rec.category)) {
+        if (parseFloat(d.rate) > 0) rec.rate = parseFloat(d.rate);
+        if (d.due) rec.due = d.due;
+      }
       const i = S.subs.findIndex(x => x.id === rec.id);
       if (i >= 0) S.subs[i] = rec; else S.subs.push(rec);
     } else {
@@ -1296,6 +1358,12 @@ document.addEventListener('input', e => {
     const neg = el.classList.contains('signed') && /^\s*-/.test(el.value), n = num(el.value);
     el.value = (neg ? '-' : '') + (n ? n.toLocaleString('ko-KR') : '');
   }
+});
+// 적금·예금 입력 중에는 금액·이자율·만기일이 바뀔 때마다 예상 이자를 다시 계산해 보여 준다
+for (const ev of ['input', 'change']) document.addEventListener(ev, e => {
+  const n = document.getElementById('depNote');
+  if (!n || !draft || !e.target.closest('#sheet')) return;
+  syncDraft(); n.textContent = depNote(draft, n.dataset.key);
 });
 document.getElementById('file').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = '';
