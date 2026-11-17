@@ -254,6 +254,10 @@ const fxNote = (cur, v) => {
   return r ? `${f ? `≈ ${won(f * r)} · ` : ''}1 ${cur} = ${r.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}원 (${S.fx.date} 환율)`
     : '환율을 아직 받지 못했어요. 인터넷에 연결한 뒤 설정에서 환율을 새로 받아 주세요.';
 };
+// 외화로 적은 고정 항목은 원화 금액을 최신 환율로 맞춰 둔다 (목록·통계에 쓰는 값)
+function fxSubs() {
+  for (const s of S.subs) { const r = s.cur && fxRate(s.cur); if (r && s.famt) s.amount = Math.round(s.famt * r); }
+}
 async function refreshFx(force) {
   if (!force && S.fx && S.fx.date === today()) return true;
   try {
@@ -261,8 +265,8 @@ async function refreshFx(force) {
     const rates = {};
     for (const c of FX) if (r.rates && r.rates[c] > 0) rates[c] = 1 / r.rates[c];
     if (!Object.keys(rates).length) return false;
-    S.fx = { date: today(), rates }; save();
-    if (draft && draft.kind === 'tx') { syncDraft(); renderSheet(); } else if (!draft && ui.tab === 'set') render();
+    S.fx = { date: today(), rates }; fxSubs(); save();
+    if (draft && (draft.kind === 'tx' || draft.kind === 'sub')) { syncDraft(); renderSheet(); } else if (!draft && (ui.tab === 'set' || ui.tab === 'subs')) render();
     return true;
   } catch (e) { return false; }
 }
@@ -390,6 +394,7 @@ function advance(sub) {
 // 결제일이 지난 구독은 가계부에 자동 기록하고 다음 결제일로 넘긴다.
 function processSubs() {
   const t = today(); let added = 0;
+  fxSubs();
   for (const sub of S.subs) {
     if (!sub.startDate) sub.startDate = t;
     if (!sub.active) continue;
@@ -399,8 +404,8 @@ function processSubs() {
       if (sub.autoLog) {
         const rec = { id: uid(), type: sub.rtype || 'expense', amount: sub.amount, category: sub.category || '구독', memo: sub.name, date: sub.nextDate, subId: sub.id };
         if (accOf(sub.acc)) rec.acc = sub.acc; // 결제 수단이 연결돼 있으면 잔액에도 반영
-        if (sub.rate) rec.rate = sub.rate;
-        if (sub.due) rec.due = sub.due;
+        if (sub.cur && sub.famt) { rec.cur = sub.cur; rec.famt = sub.famt; rec.rate = fxRate(sub.cur) || sub.amount / sub.famt; } // 외화: 기록하는 날의 환율로 계산한 원화 금액
+        else { if (sub.rate) rec.rate = sub.rate; if (sub.due) rec.due = sub.due; }
         S.tx.push(rec);
         added++;
       }
@@ -873,7 +878,7 @@ function subItem(s) {
   return `<li><button class="item ${s.active ? '' : 'paused'}" data-act="editSub" data-v="${s.id}">
     <span class="em">${emojiOf(s.rtype || 'expense', s.category || '구독')}</span>
     <span class="mid"><b>${esc(s.name)}${dd}</b><span>${CYC[s.cycle]} · 다음 결제 ${nd.getMonth() + 1}월 ${nd.getDate()}일${s.memo ? ' · ' + esc(s.memo) : ''}</span></span>
-    <span class="amt num ${s.rtype === 'income' ? 'inc' : ''}">${s.rtype === 'income' ? '+' : ''}${won(s.amount)}<small>${UNITS[u][1]} ${won(conv(s, u))}</small></span>
+    <span class="amt num ${s.rtype === 'income' ? 'inc' : ''}">${s.rtype === 'income' ? '+' : ''}${s.cur ? `${FX_SIGN[s.cur] || s.cur}${s.famt} ≈ ` : ''}${won(s.amount)}<small>${UNITS[u][1]} ${won(conv(s, u))}</small></span>
   </button></li>`;
 }
 function viewSubs() {
@@ -1073,16 +1078,19 @@ function renderSheet() {
       ${d.ctype === 'expense' ? `<label class="f">월 예산 (없으면 비워 두세요)</label><div class="won"><input class="in amt" data-f="cbud" inputmode="numeric" placeholder="0" value="${num(d.cbud) ? num(d.cbud).toLocaleString('ko-KR') : ''}"></div>` : ''}
       ${foot}`;
   } else if (d.kind === 'sub') {
-    const rt = d.rtype || 'expense';
+    const rt = d.rtype || 'expense', fgn = d.cur && d.cur !== 'KRW';
     el.innerHTML = `<div class="grab"></div><h3>${d.id ? '고정 항목 수정' : '고정 항목 추가'}</h3>
       ${segHtml('rtype', rt, [['income', '수입'], ['expense', '지출'], ['saving', '저축·투자']])}
       <label class="f" style="margin-top:0">카테고리</label>
       <div class="chips">${CATS[rt].map(([c, e]) => `<button class="chip ${d.category === c ? 'on' : ''}" data-act="cat" data-v="${esc(c)}">${esc(e)} ${esc(c)}</button>`).join('')}</div>
       <label class="f">이름</label><input class="in" data-f="name" maxlength="30" placeholder="예: 음악 스트리밍" value="${esc(d.name)}">
-      ${depFields(d, rt, 'nextDate')}
+      ${fgn ? '' : depFields(d, rt, 'nextDate')}
       <label class="f">${rt === 'expense' ? '결제' : rt === 'income' ? '받는' : '넣는'} 주기</label>
       <div style="margin-bottom:-14px">${segHtml('cycle', d.cycle, Object.entries(CYC))}</div>
-      ${amt('1회 결제 금액')}
+      <label class="f">1회 ${rt === 'expense' ? '결제' : rt === 'income' ? '받는' : '넣는'} 금액${fgn ? ` (${d.cur})` : ''}</label>
+      <div class="chips" style="margin-bottom:8px">${['KRW', ...FX].map(c => `<button class="chip ${(d.cur || 'KRW') === c ? 'on' : ''}" data-act="cur" data-v="${c}">${c === 'KRW' ? '원' : c}</button>`).join('')}</div>
+      ${fgn ? `<input class="in amtin famt" data-f="famt" inputmode="decimal" placeholder="0" value="${esc(d.famt || '')}"><p class="note" id="fxNote">${fxNote(d.cur, d.famt)} · 기록하는 날의 환율로 원화 금액을 계산해요.</p>`
+        : `<div class="won"><input class="in amtin amt" data-f="amount" inputmode="numeric" placeholder="0" value="${d.amount ? d.amount.toLocaleString('ko-KR') : ''}"></div>`}
       <label class="f">다음 결제일</label><input class="in" type="date" data-f="nextDate" value="${d.nextDate}">
       <label class="f">메모</label><input class="in" data-f="memo" maxlength="40" placeholder="예: 가족 요금제" value="${esc(d.memo)}">
       ${accPick('결제 수단 · 자동 기록할 때 잔액에 반영', 'acc', d.acc)}
@@ -1143,7 +1151,7 @@ const ACT = {
   year(v) { ui.year = +v; window.scrollTo(0, 0); render(); },
   gostat(v) { ui.statView = 'month'; ui.statMonth = v; ui.statType = 'expense'; ui.tab = 'stat'; window.scrollTo(0, 0); render(); },
   transfer() { newTx({ type: 'transfer', category: '이체', acc: '' }); },
-  cur(v) { syncDraft(); draft.cur = v; if (draft.id && draft.rate) delete draft.rate; renderSheet(); },
+  cur(v) { syncDraft(); draft.cur = v; if (draft.kind === 'tx' && draft.id && draft.rate) delete draft.rate; renderSheet(); },
   async fxNow(v, btn) { btn.textContent = '받는 중…'; toast(await refreshFx(true) ? '환율을 새로 받았어요' : '환율을 받지 못했어요. 인터넷 연결을 확인해 주세요'); if (ui.tab === 'set' && !draft) render(); },
   smsPerm() { Native.requestSms(); },
   smsImport() { toast('문자함을 확인하고 있어요'); Native.importSms(30); },
@@ -1266,12 +1274,20 @@ const ACT = {
       if (!ui.search) ui.date = rec.date;
     } else if (d.kind === 'sub') {
       if (!d.name.trim()) return toast('서비스 이름을 입력해 주세요');
+      const fgn = d.cur && d.cur !== 'KRW';
+      if (fgn) { // 외화 금액을 그대로 간직하고, 원화 금액은 환율이 바뀔 때마다 다시 계산한다
+        const f = parseFloat(d.famt) || 0, r = fxRate(d.cur);
+        if (!f) return toast('금액을 입력해 주세요');
+        if (!r) return toast('환율을 아직 받지 못했어요. 인터넷 연결을 확인해 주세요');
+        d.amount = Math.round(f * r); d.famt = f;
+      }
       if (!d.amount) return toast('금액을 입력해 주세요');
       if (!d.nextDate) return toast('다음 결제일을 선택해 주세요');
       const rec = { id: d.id || uid(), name: d.name.trim(), amount: d.amount, cycle: d.cycle, rtype: d.rtype || 'expense', category: d.category || '구독', nextDate: d.nextDate,
         anchorDay: parse(d.nextDate).getDate(), startDate: d.startDate || today(), memo: d.memo.trim(), autoLog: !!d.autoLog, active: d.id ? !!d.active : true };
       if (accOf(d.acc)) rec.acc = d.acc;
-      if (isDeposit(rec.rtype, rec.category)) {
+      if (fgn) { rec.cur = d.cur; rec.famt = d.famt; }
+      else if (isDeposit(rec.rtype, rec.category)) {
         if (parseFloat(d.rate) > 0) rec.rate = parseFloat(d.rate);
         if (d.due) rec.due = d.due;
       }
